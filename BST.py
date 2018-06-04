@@ -66,7 +66,7 @@ class BinarySearchTree:
 		    node.getLHS().setParent(parent)
 		return
 	    if node.getRHS() != '':
-		if node == self.root
+		if node == self.root:
 		    self.root = node.getRHS()
 		elif parent.getRHS == node:
 		    parent.setRHS(node.getRHS())
@@ -142,6 +142,6 @@ class BinarySearchTree:
 	    ret = ret + self.tarverPostOrder(node.getLHS())
 	if node.getRHS()!='':
 	    ret = ret +self.traverPostOrder(node.getRHS())
-	ret.append(node.getValue))
+	ret.append(node.getValue)
 	return ret
     
