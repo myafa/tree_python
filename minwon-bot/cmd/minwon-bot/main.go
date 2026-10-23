@@ -82,6 +82,11 @@ func run(port int, openBrowser bool) error {
 		}
 	}
 
+	// 답변 후 자동 처리와 하루 요약을 위한 주기 점검. 화면을 닫아도 이 프로그램이 켜져 있는 동안 돈다.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.Runner().Start(ctx)
+
 	httpSrv := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 1)
 	go func() { errc <- httpSrv.Serve(ln) }()
@@ -94,9 +99,10 @@ func run(port int, openBrowser bool) error {
 			return err
 		}
 	case <-stop:
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := httpSrv.Shutdown(ctx); err != nil {
+		cancel()
+		shutdownCtx, done := context.WithTimeout(context.Background(), 5*time.Second)
+		defer done()
+		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 			log.Printf("종료 중 오류: %v", err)
 		}
 	}

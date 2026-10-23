@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"minwon-bot/internal/config"
 	"minwon-bot/internal/llm"
 	"minwon-bot/internal/minwon"
+	"minwon-bot/internal/report"
 )
 
 const (
@@ -46,8 +48,8 @@ func (s *Server) apiDraft(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	s.op.Lock()
-	defer s.op.Unlock()
+	s.d.Lock.Lock()
+	defer s.d.Lock.Unlock()
 	ctx := r.Context()
 
 	c, err := s.d.Store.GetCase(ctx, id)
@@ -279,7 +281,14 @@ func (s *Server) apiAnswerAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.d.Store.AddEvent(ctx, sub.CaseID, "answer_added", "")
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	// 자동 처리가 켜져 있고 이 사안이 자동 처리 대상이면 승인 없이 평가하고 재민원 또는 종결까지 처리한다.
+	cfg := s.config()
+	c, _ := s.d.Store.GetCase(ctx, sub.CaseID)
+	auto := cfg.Auto.Enabled && cfg.Auto.AnswerAuto && c.Status == "open" && !c.AutoOff
+	if auto {
+		go s.runner.ProcessPending(context.Background())
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "auto": auto})
 }
 
 func (s *Server) apiEvaluate(w http.ResponseWriter, r *http.Request) {
@@ -288,8 +297,8 @@ func (s *Server) apiEvaluate(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	s.op.Lock()
-	defer s.op.Unlock()
+	s.d.Lock.Lock()
+	defer s.d.Lock.Unlock()
 	ctx := r.Context()
 	ans, err := s.d.Store.GetAnswer(ctx, id)
 	if err != nil {
@@ -323,8 +332,8 @@ func (s *Server) apiFollowUp(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	s.op.Lock()
-	defer s.op.Unlock()
+	s.d.Lock.Lock()
+	defer s.d.Lock.Unlock()
 	ctx := r.Context()
 	ans, err := s.d.Store.GetAnswer(ctx, id)
 	if err != nil {
@@ -403,6 +412,14 @@ func (s *Server) apiSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	cfg.MaskTerms = terms
+	// 화면에는 비밀 값을 내려 보내지 않으므로, 비워서 보내면 저장된 값을 그대로 둔다.
+	old := s.config()
+	if cfg.Report.Telegram.Token == "" {
+		cfg.Report.Telegram.Token = old.Report.Telegram.Token
+	}
+	if cfg.Report.Email.Password == "" {
+		cfg.Report.Email.Password = old.Report.Email.Password
+	}
 	if err := cfg.Validate(); err != nil {
 		s.fail(w, bad(err.Error()))
 		return
@@ -419,8 +436,8 @@ func (s *Server) apiSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) apiLLMTest(w http.ResponseWriter, r *http.Request) {
-	s.op.Lock()
-	defer s.op.Unlock()
+	s.d.Lock.Lock()
+	defer s.d.Lock.Unlock()
 	s.mu.RLock()
 	l := s.llm
 	s.mu.RUnlock()
@@ -471,8 +488,8 @@ func (s *Server) apiStyleDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) apiStyleExtract(w http.ResponseWriter, r *http.Request) {
-	s.op.Lock()
-	defer s.op.Unlock()
+	s.d.Lock.Lock()
+	defer s.d.Lock.Unlock()
 	ctx := r.Context()
 	samples, err := s.d.Store.ListStyleSamples(ctx, "sample", 5)
 	if err != nil {
@@ -508,5 +525,129 @@ func (s *Server) apiStyleReset(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// ---------------------------------------------------------------- 자동 처리, 보고
+
+func (s *Server) apiReopen(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	ctx := r.Context()
+	if err := s.d.Store.ReopenCase(ctx, id); err != nil {
+		s.fail(w, err)
+		return
+	}
+	_ = s.d.Store.AddEvent(ctx, id, "reopened", "")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) apiCaseAuto(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	var req struct {
+		Off bool `json:"off"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		s.fail(w, err)
+		return
+	}
+	ctx := r.Context()
+	if err := s.d.Store.SetCaseAutoOff(ctx, id, req.Off); err != nil {
+		s.fail(w, err)
+		return
+	}
+	kind := "auto_on"
+	if req.Off {
+		kind = "auto_off"
+	}
+	_ = s.d.Store.AddEvent(ctx, id, kind, "")
+	if !req.Off {
+		go s.runner.ProcessPending(context.Background())
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) apiAttentionClear(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if err := s.d.Store.SetAttention(r.Context(), id, ""); err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// apiAutoRun 은 지금 한 번 점검한다. 시간이 걸릴 수 있어 백그라운드로 돌리고 결과는 보고함에 쌓인다.
+func (s *Server) apiAutoRun(w http.ResponseWriter, r *http.Request) {
+	if !s.config().Auto.Enabled {
+		s.fail(w, conflict("설정에서 자동 처리가 꺼져 있습니다"))
+		return
+	}
+	go s.runner.CheckNow(context.Background())
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) apiReportTest(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Channel string `json:"channel"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		s.fail(w, err)
+		return
+	}
+	cfg := s.config()
+	var rep report.Reporter
+	switch req.Channel {
+	case "telegram":
+		t := report.TelegramFrom(cfg)
+		if t == nil {
+			s.fail(w, bad("텔레그램 토큰과 채팅 ID 를 먼저 저장하세요"))
+			return
+		}
+		rep = t
+	case "email":
+		e := report.EmailFrom(cfg)
+		if e == nil {
+			s.fail(w, bad("이메일 서버와 주소를 먼저 저장하세요"))
+			return
+		}
+		rep = e
+	default:
+		rep = report.Inbox{Store: s.d.Store}
+	}
+	err := rep.Send(r.Context(), report.Report{
+		Kind: report.KindTest, Title: "보고 채널 시험", Summary: "이 메시지가 보이면 보고 채널이 정상입니다.",
+		Body: "민원 도우미에서 보낸 시험 메시지입니다.", At: s.d.Now(),
+	})
+	if err != nil {
+		s.fail(w, &userErr{http.StatusBadGateway, err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "channel": rep.Name()})
+}
+
+// apiReportClear 는 텔레그램·이메일 설정(비밀 값 포함)을 지운다.
+func (s *Server) apiReportClear(w http.ResponseWriter, r *http.Request) {
+	cfg := s.config()
+	cfg.Report.Telegram = config.Telegram{}
+	def := config.Default().Report.Email
+	cfg.Report.Email = def
+	if err := s.d.SaveConfig(cfg); err != nil {
+		s.fail(w, err)
+		return
+	}
+	s.mu.Lock()
+	s.cfg = cfg
+	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

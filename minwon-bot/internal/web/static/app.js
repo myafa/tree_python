@@ -47,6 +47,38 @@
     });
   }
 
+  function chk(id) { var e = document.getElementById(id); return !!(e && e.checked); }
+  function int(id, dflt) { var n = parseInt(val(id), 10); return isNaN(n) ? dflt : n; }
+
+  // 설정 화면의 모든 입력을 한 번에 모은다. 비밀 값(토큰, 비밀번호)은 비워 두면 서버가 저장된 값을 유지한다.
+  function collectSettings() {
+    return {
+      llm: {
+        backend: val('s-backend'), model: val('s-model').trim(), effort: val('s-effort'),
+        claude_bin: val('s-bin').trim(), timeout_sec: int('s-timeout', 0)
+      },
+      limits: {
+        daily_max: int('s-daily', 0), min_gap_minutes: int('s-gap', 0),
+        repeat_round: int('s-repeat', 0), similarity: parseFloat(val('s-sim')) || 0
+      },
+      auto: {
+        enabled: chk('s-auto-enabled'), answer_auto: chk('s-auto-answer'),
+        check_interval_hours: int('s-auto-interval', 0), hold_policy: val('s-auto-hold'),
+        daily_summary_hour: int('s-auto-daily', -1)
+      },
+      report: {
+        detail: val('s-rep-detail'),
+        telegram: { token: val('s-tg-token').trim(), chat_id: val('s-tg-chat').trim() },
+        email: {
+          host: val('s-em-host').trim(), port: int('s-em-port', 0), tls: val('s-em-tls'),
+          username: val('s-em-user').trim(), password: val('s-em-pass'),
+          from: val('s-em-from').trim(), to: val('s-em-to').trim()
+        }
+      },
+      mask_terms: lines(val('s-mask'))
+    };
+  }
+
   var AI_WAIT = 'AI 가 작업 중… (최대 몇 분)';
 
   var actions = {
@@ -112,7 +144,10 @@
       if (!body.trim()) { toast('답변 본문을 붙여넣으세요.', true); return; }
       return busy(btn, '저장 중…', function () {
         return post('/api/submissions/' + id + '/answers', { body: body, dept: val('answer-dept-' + id) })
-          .then(function () { location.reload(); });
+          .then(function (j) {
+            if (j.auto) toast('답변을 저장했습니다. 승인 없이 자동으로 평가하고 처리합니다. 결과는 이 화면과 보고함에 나타납니다.');
+            setTimeout(function () { location.reload(); }, j.auto ? 1200 : 0);
+          });
       });
     },
     evaluate: function (btn) {
@@ -133,19 +168,47 @@
       });
     },
     'save-settings': function (btn) {
-      var cfg = {
-        llm: {
-          backend: val('s-backend'), model: val('s-model').trim(), effort: val('s-effort'),
-          claude_bin: val('s-bin').trim(), timeout_sec: parseInt(val('s-timeout'), 10) || 0
-        },
-        limits: {
-          daily_max: parseInt(val('s-daily'), 10) || 0, min_gap_minutes: parseInt(val('s-gap'), 10) || 0,
-          repeat_round: parseInt(val('s-repeat'), 10) || 0, similarity: parseFloat(val('s-sim')) || 0
-        },
-        mask_terms: lines(val('s-mask'))
-      };
       return busy(btn, '저장 중…', function () {
-        return post('/api/settings', cfg).then(function () { toast('설정을 저장했습니다.'); setTimeout(function () { location.reload(); }, 600); });
+        return post('/api/settings', collectSettings()).then(function () {
+          toast('설정을 저장했습니다.');
+          setTimeout(function () { location.reload(); }, 600);
+        });
+      });
+    },
+    'report-test': function (btn) {
+      var ch = btn.dataset.channel;
+      return busy(btn, '보내는 중…', function () {
+        // 입력한 값으로 시험하도록 먼저 저장한다.
+        return post('/api/settings', collectSettings())
+          .then(function () { return post('/api/report/test', { channel: ch }); })
+          .then(function (j) { toast(j.channel + '로 시험 메시지를 보냈습니다.'); });
+      });
+    },
+    'report-clear': function (btn) {
+      if (!confirm('텔레그램·이메일 설정(토큰, 비밀번호 포함)을 지웁니다. 계속할까요?')) return;
+      return busy(btn, '…', function () {
+        return post('/api/report/clear').then(function () { location.reload(); });
+      });
+    },
+    'auto-run': function (btn) {
+      return busy(btn, '확인 중…', function () {
+        return post('/api/auto/run').then(function () { toast('확인을 시작했습니다. 결과는 보고함에 쌓입니다.'); });
+      });
+    },
+    'case-auto': function (btn) {
+      return busy(btn, '…', function () {
+        return post('/api/cases/' + btn.dataset.case + '/auto', { off: btn.dataset.off === '1' })
+          .then(function () { location.reload(); });
+      });
+    },
+    'reopen-case': function (btn) {
+      return busy(btn, '…', function () {
+        return post('/api/cases/' + btn.dataset.case + '/reopen').then(function () { location.reload(); });
+      });
+    },
+    'clear-attention': function (btn) {
+      return busy(btn, '…', function () {
+        return post('/api/cases/' + btn.dataset.case + '/attention/clear').then(function () { location.reload(); });
       });
     },
     'llm-test': function (btn) {
@@ -187,6 +250,11 @@
     var r = fn(btn);
     if (r && r.catch) r.catch(function (e) { toast(e.message, true); });
   });
+
+  // 자동 처리 결과를 기다리는 동안(방금 기록한 답변)에는 주기적으로 새로 고친다. 서버가 기다림이 끝나면 표시를 없앤다.
+  if (document.querySelector('[data-polling="1"]')) {
+    setTimeout(function () { location.reload(); }, 8000);
+  }
 
   // 설정 화면: 방식을 바꾸면 모델 입력란의 기본값을 맞춘다.
   var backend = document.getElementById('s-backend');

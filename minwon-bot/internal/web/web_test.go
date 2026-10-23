@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"minwon-bot/internal/config"
 	"minwon-bot/internal/llm"
 	"minwon-bot/internal/minwon"
+	"minwon-bot/internal/portal"
 	"minwon-bot/internal/store"
 )
 
@@ -36,7 +38,15 @@ type env struct {
 	now      time.Time
 }
 
-func newEnv(t *testing.T) *env {
+// envOpt 는 테스트 환경의 설정이나 의존성을 바꾼다.
+type envOpt func(*config.Config, *Deps)
+
+func autoOn(c *config.Config, _ *Deps) { c.Auto.AnswerAuto = true }
+
+func withPortal(p portal.Portal) envOpt { return func(_ *config.Config, d *Deps) { d.Portal = p } }
+
+// newEnv 는 기본적으로 답변 자동 처리를 끈 환경이다(수동 흐름 테스트용). 자동 흐름은 autoOn 으로 켠다.
+func newEnv(t *testing.T, opts ...envOpt) *env {
 	t.Helper()
 	st, err := store.Open(":memory:")
 	if err != nil {
@@ -77,12 +87,19 @@ func newEnv(t *testing.T) *env {
 		b, _ := json.Marshal(v)
 		return b, nil
 	})
-	srv, err := New(Deps{
-		Store: st, Config: config.Default(),
+	cfg := config.Default()
+	cfg.Auto.AnswerAuto = false
+	deps := Deps{
+		Store:      st,
 		SaveConfig: func(c config.Config) error { e.saved = append(e.saved, c); return nil },
 		NewLLM:     func(config.Config) llm.LLM { return fake },
 		Now:        func() time.Time { return e.now },
-	})
+	}
+	for _, o := range opts {
+		o(&cfg, &deps)
+	}
+	deps.Config = cfg
+	srv, err := New(deps)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -493,5 +510,247 @@ func TestGuardUsesCrossCaseLimits(t *testing.T) {
 	_, page := e.get("/cases/" + itoa(cid))
 	if !strings.Contains(page, "하루 한도 3건") || !strings.Contains(page, "최소 간격") {
 		t.Errorf("다른 사안의 제출도 한도에 포함되어야 함")
+	}
+}
+
+// ---------------------------------------------------------------- 자동 처리 (화면 연결)
+
+// waitFor 는 백그라운드 처리가 끝나길 최대 3초 기다린다.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("시간 안에 이뤄지지 않음: %s", what)
+}
+
+func (e *env) submittedCase(receipt string) (int64, store.Submission) {
+	e.t.Helper()
+	ctx := context.Background()
+	cid, _ := e.st.CreateCase(ctx, store.Case{Title: "휴가 반려", Agency: "국방부", Facts: "사실"})
+	e.st.SetClock(func() time.Time { return e.now.Add(-48 * time.Hour) })
+	sub, _ := e.st.CreateSubmission(ctx, cid, "initial", "", "제목", "휴가 반려 기준이 궁금합니다. 기준을 알려 주세요.", `["기준을 알려 주세요."]`)
+	e.st.MarkSubmitted(ctx, sub.ID, receipt)
+	e.st.SetClock(func() time.Time { return e.now })
+	return cid, sub
+}
+
+func TestPastedAnswerIsProcessedAutomaticallyAndReported(t *testing.T) {
+	e := newEnv(t, autoOn)
+	ctx := context.Background()
+	cid, sub := e.submittedCase("R1")
+
+	m := e.mustOK("/api/submissions/"+itoa(sub.ID)+"/answers", map[string]any{"body": "관련 규정에 따라 처리되었습니다.", "dept": "인사복지실"})
+	if m["auto"] != true {
+		t.Fatalf("자동 처리가 시작되어야 함: %v", m)
+	}
+	// 연동 없음 + 미흡 → 재민원 초안이 자동으로 만들어지고 보고함에 쌓인다.
+	waitFor(t, "재민원 초안 생성", func() bool {
+		subs, _ := e.st.ListSubmissions(ctx, cid)
+		return len(subs) == 2
+	})
+	subs, _ := e.st.ListSubmissions(ctx, cid)
+	if subs[1].Kind != "followup" || subs[1].Status != "draft" {
+		t.Fatalf("재민원 초안: %+v", subs[1])
+	}
+	waitFor(t, "보고 저장", func() bool {
+		n, _ := e.st.CountUnreadReports(ctx)
+		return n == 1
+	})
+
+	_, page := e.get("/")
+	if !strings.Contains(page, `href="/inbox"`) || !strings.Contains(page, `badge hot">1<`) {
+		t.Error("상단에 안 읽은 보고 수가 보여야 함")
+	}
+	_, page = e.get("/inbox")
+	if !strings.Contains(page, "재민원 초안을 준비했습니다") || !strings.Contains(page, e.followup.Body) {
+		t.Errorf("보고함에 초안 보고와 전체 본문이 있어야 함:\n%s", page)
+	}
+	if n, _ := e.st.CountUnreadReports(ctx); n != 0 {
+		t.Error("보고함을 열면 읽음 처리")
+	}
+	_, page = e.get("/cases/" + itoa(cid))
+	if !strings.Contains(page, "재민원 초안이 준비되었습니다") || !strings.Contains(page, `data-action="clear-attention"`) {
+		t.Error("사안 화면에 주의 표시가 있어야 함")
+	}
+}
+
+func TestAutoCloseThenReopen(t *testing.T) {
+	e := newEnv(t, autoOn)
+	ctx := context.Background()
+	e.eval.Recommendation = "close"
+	e.eval.Items = []minwon.ItemEval{{Verdict: "sufficient", Reason: "ok", Confidence: "high"}}
+	cid, sub := e.submittedCase("R1")
+	e.mustOK("/api/submissions/"+itoa(sub.ID)+"/answers", map[string]any{"body": "충분한 답변"})
+	waitFor(t, "자동 종결", func() bool {
+		c, _ := e.st.GetCase(ctx, cid)
+		return c.Status == "closed"
+	})
+	_, page := e.get("/cases/" + itoa(cid))
+	if !strings.Contains(page, "(자동)") || !strings.Contains(page, `data-action="reopen-case"`) {
+		t.Error("자동 종결 사유와 '다시 열기' 버튼이 보여야 함")
+	}
+	e.mustOK("/api/cases/"+itoa(cid)+"/reopen", map[string]any{})
+	if c, _ := e.st.GetCase(ctx, cid); c.Status != "open" {
+		t.Fatal("다시 열려야 함")
+	}
+	if code, _ := e.post("/api/cases/999/reopen", map[string]any{}); code != 404 {
+		t.Errorf("없는 사안은 404: %d", code)
+	}
+}
+
+func TestPerCaseAutoOffAndAttentionControls(t *testing.T) {
+	e := newEnv(t, autoOn)
+	ctx := context.Background()
+	cid, sub := e.submittedCase("R1")
+	e.mustOK("/api/cases/"+itoa(cid)+"/auto", map[string]any{"off": true})
+	m := e.mustOK("/api/submissions/"+itoa(sub.ID)+"/answers", map[string]any{"body": "답변"})
+	if m["auto"] != false {
+		t.Fatalf("자동 처리를 끈 사안은 처리하지 않아야 함: %v", m)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if subs, _ := e.st.ListSubmissions(ctx, cid); len(subs) != 1 {
+		t.Fatal("재민원 초안이 만들어지면 안 됨")
+	}
+	_, page := e.get("/cases/" + itoa(cid))
+	if !strings.Contains(page, "자동 처리 꺼짐") || !strings.Contains(page, `data-action="case-auto"`) || !strings.Contains(page, "자동 처리 켜기") {
+		t.Error("꺼짐 표시와 켜기 버튼")
+	}
+
+	e.st.SetAttention(ctx, cid, "로그인이 필요합니다")
+	_, page = e.get("/cases/" + itoa(cid))
+	if !strings.Contains(page, "⚠ 로그인이 필요합니다") {
+		t.Error("주의 표시")
+	}
+	_, list := e.get("/")
+	if !strings.Contains(list, "확인 필요") {
+		t.Error("목록에도 확인 필요 표시")
+	}
+	e.mustOK("/api/cases/"+itoa(cid)+"/attention/clear", map[string]any{})
+	if c, _ := e.st.GetCase(ctx, cid); c.Attention != "" {
+		t.Error("주의 해제")
+	}
+	// 다시 켜면 밀린 답변을 처리한다.
+	e.mustOK("/api/cases/"+itoa(cid)+"/auto", map[string]any{"off": false})
+	waitFor(t, "다시 켠 뒤 처리", func() bool {
+		subs, _ := e.st.ListSubmissions(ctx, cid)
+		return len(subs) == 2
+	})
+}
+
+func TestAutoRunImportsFromPortalAndRespectsDisabled(t *testing.T) {
+	fp := portal.NewFake()
+	e := newEnv(t, autoOn, withPortal(fp))
+	ctx := context.Background()
+	e.eval.Recommendation = "close"
+	e.eval.Items = []minwon.ItemEval{{Verdict: "sufficient", Reason: "ok", Confidence: "high"}}
+	cid, _ := e.submittedCase("REC-9")
+	fp.SetAnswer("REC-9", "사이트에서 온 답변", "인사복지실")
+
+	e.mustOK("/api/auto/run", map[string]any{})
+	waitFor(t, "사이트 답변을 가져와 자동 종결", func() bool {
+		c, _ := e.st.GetCase(ctx, cid)
+		return c.Status == "closed"
+	})
+	if _, body := e.get("/settings"); !strings.Contains(body, "가짜 사이트") {
+		t.Error("설정 화면에 사이트 연동 이름이 보여야 함")
+	}
+
+	cfg := config.Default()
+	cfg.Auto.Enabled = false
+	e.mustOK("/api/settings", cfg)
+	if code, _ := e.post("/api/auto/run", map[string]any{}); code != http.StatusConflict {
+		t.Errorf("자동 처리가 꺼져 있으면 409: %d", code)
+	}
+}
+
+func TestReportSettingsKeepSecretsOutOfPages(t *testing.T) {
+	e := newEnv(t)
+	cfg := config.Default()
+	cfg.Report.Telegram = config.Telegram{Token: "SECRET-TG-TOKEN", ChatID: "777"}
+	cfg.Report.Email = config.Email{Host: "smtp.example.kr", Port: 587, Username: "u", Password: "SECRET-MAIL-PW", From: "a@x.kr", To: "b@x.kr", TLS: "starttls"}
+	e.mustOK("/api/settings", cfg)
+
+	_, page := e.get("/settings")
+	for _, secret := range []string{"SECRET-TG-TOKEN", "SECRET-MAIL-PW"} {
+		if strings.Contains(page, secret) {
+			t.Errorf("설정 화면에 비밀 값이 내려가면 안 됨: %s", secret)
+		}
+	}
+	if !strings.Contains(page, "저장됨") || !strings.Contains(page, "smtp.example.kr") || !strings.Contains(page, "777") {
+		t.Error("저장 여부와 비밀 아닌 값은 보여야 함")
+	}
+
+	// 화면은 비밀 칸을 비워서 보내므로, 저장된 값이 유지되어야 한다.
+	again := cfg
+	again.Report.Telegram.Token, again.Report.Email.Password = "", ""
+	again.Report.Detail = "full"
+	e.mustOK("/api/settings", again)
+	got := e.srv.config()
+	if got.Report.Telegram.Token != "SECRET-TG-TOKEN" || got.Report.Email.Password != "SECRET-MAIL-PW" || got.Report.Detail != "full" {
+		t.Fatalf("비워서 보내면 기존 비밀 값을 유지해야 함: %+v", got.Report)
+	}
+	// 새 값을 보내면 바뀐다.
+	again.Report.Telegram.Token = "NEW-TOKEN"
+	e.mustOK("/api/settings", again)
+	if e.srv.config().Report.Telegram.Token != "NEW-TOKEN" {
+		t.Error("새 토큰으로 바뀌어야 함")
+	}
+
+	e.mustOK("/api/report/clear", map[string]any{})
+	got = e.srv.config()
+	if got.Report.Telegram.Token != "" || got.Report.Email.Host != "" || got.Report.Email.Password != "" || got.TelegramEnabled() || got.EmailEnabled() {
+		t.Fatalf("지우기: %+v", got.Report)
+	}
+}
+
+func TestReportTestEndpoint(t *testing.T) {
+	e := newEnv(t)
+	if code, m := e.post("/api/report/test", map[string]any{"channel": "telegram"}); code != 400 || !strings.Contains(m["error"].(string), "텔레그램") {
+		t.Errorf("텔레그램 미설정: %d %v", code, m)
+	}
+	if code, m := e.post("/api/report/test", map[string]any{"channel": "email"}); code != 400 || !strings.Contains(m["error"].(string), "이메일") {
+		t.Errorf("이메일 미설정: %d %v", code, m)
+	}
+	m := e.mustOK("/api/report/test", map[string]any{"channel": "inbox"})
+	if m["channel"] != "보고함" {
+		t.Errorf("보고함 시험: %v", m)
+	}
+	if reps, _ := e.st.ListReports(context.Background(), 5); len(reps) != 1 || reps[0].Kind != "test" {
+		t.Errorf("보고함에 시험 메시지: %+v", reps)
+	}
+	// 연결 실패는 오류 문구로 돌려준다(토큰 노출 없이).
+	cfg := config.Default()
+	cfg.Report.Email = config.Email{Host: "127.0.0.1", Port: 1, From: "a@x.kr", To: "b@x.kr", TLS: "none"}
+	e.mustOK("/api/settings", cfg)
+	code, m := e.post("/api/report/test", map[string]any{"channel": "email"})
+	if code != http.StatusBadGateway || !strings.Contains(m["error"].(string), "연결하지 못했습니다") {
+		t.Errorf("연결 실패 안내: %d %v", code, m)
+	}
+}
+
+// 템플릿에서 쓰는 입력 종류가 CSS 에 빠지면 스타일이 적용되지 않은 채 보인다(비밀번호 칸이 그랬다).
+func TestEveryInputTypeIsStyled(t *testing.T) {
+	css, err := assets.ReadFile("static/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := assets.ReadDir("templates")
+	typeRe := regexp.MustCompile(`<input[^>]*\stype="(\w+)"`)
+	for _, e := range entries {
+		b, _ := assets.ReadFile("templates/" + e.Name())
+		for _, m := range typeRe.FindAllStringSubmatch(string(b), -1) {
+			switch m[1] {
+			case "hidden", "checkbox", "submit", "button":
+				continue
+			}
+			if !strings.Contains(string(css), "input[type="+m[1]+"]") {
+				t.Errorf("%s: input type=%s 에 대한 CSS 규칙이 없음", e.Name(), m[1])
+			}
+		}
 	}
 }

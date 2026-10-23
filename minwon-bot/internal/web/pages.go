@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -15,7 +16,8 @@ import (
 
 type casesPage struct {
 	base
-	Cases []store.Case
+	Cases  []store.Case
+	AutoOn bool
 }
 
 func (s *Server) pageCases(w http.ResponseWriter, r *http.Request) {
@@ -24,11 +26,11 @@ func (s *Server) pageCases(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "목록을 읽지 못했습니다", http.StatusInternalServerError)
 		return
 	}
-	s.render(w, "cases", casesPage{base: s.base("사안"), Cases: cases})
+	s.render(w, "cases", casesPage{base: s.base(r, "사안"), Cases: cases, AutoOn: s.config().Auto.Enabled})
 }
 
 func (s *Server) pageCaseNew(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "case_new", s.base("새 사안"))
+	s.render(w, "case_new", s.base(r, "새 사안"))
 }
 
 func (s *Server) postCase(w http.ResponseWriter, r *http.Request) {
@@ -60,6 +62,8 @@ func (s *Server) postCase(w http.ResponseWriter, r *http.Request) {
 type answerView struct {
 	A    store.Answer
 	Eval *minwon.EvalResult
+	// Waiting 은 자동 처리를 기다리는 중이라는 뜻이다.
+	Waiting bool
 }
 
 type subView struct {
@@ -77,6 +81,9 @@ type casePage struct {
 	Events      []store.Event
 	HasStyle    bool
 	CanFollowUp bool
+	AutoOn      bool
+	// Polling 이 true 면 화면이 자동 처리 결과를 기다리며 주기적으로 새로 고친다.
+	Polling bool
 }
 
 func (s *Server) pageCase(w http.ResponseWriter, r *http.Request) {
@@ -96,7 +103,9 @@ func (s *Server) pageCase(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "제출 기록을 읽지 못했습니다", http.StatusInternalServerError)
 		return
 	}
-	pg := casePage{base: s.base(c.Title), Case: c, HasStyle: s.loadStyle(ctx) != nil}
+	cfg := s.config()
+	autoOn := cfg.Auto.Enabled && cfg.Auto.AnswerAuto
+	pg := casePage{base: s.base(r, c.Title), Case: c, HasStyle: s.loadStyle(ctx) != nil, AutoOn: autoOn}
 	hasDraft := false
 	for _, sub := range subs {
 		v := subView{S: sub, Asks: parseAsks(sub.AsksJSON)}
@@ -113,6 +122,11 @@ func (s *Server) pageCase(w http.ResponseWriter, r *http.Request) {
 		answers, _ := s.d.Store.ListAnswers(ctx, sub.ID)
 		for _, a := range answers {
 			av := answerView{A: a}
+			av.Waiting = autoOn && a.ProcessedAt.IsZero() && c.Status == "open" && !c.AutoOff
+			// 방금 기록한 답변이 처리되기를 기다리는 동안만 새로 고친다(오래 걸리면 멈춘다).
+			if av.Waiting && s.d.Now().Sub(a.ReceivedAt) < 10*time.Minute {
+				pg.Polling = true
+			}
 			if ev, err := s.d.Store.LatestEvaluation(ctx, a.ID); err == nil {
 				var res minwon.EvalResult
 				if json.Unmarshal([]byte(ev.ResultJSON), &res) == nil {
@@ -130,19 +144,49 @@ func (s *Server) pageCase(w http.ResponseWriter, r *http.Request) {
 
 type settingsPage struct {
 	base
-	Cfg     config.Config
+	Cfg     config.Config // 비밀 값은 비워서 전달한다
 	Efforts []string
 	Style   *minwon.StyleProfile
 	Samples []store.StyleSample
+	// 비밀 값은 화면에 내려 보내지 않고, 저장되어 있는지만 알려 준다.
+	HasTelegramToken, HasEmailPassword bool
+	TelegramEnv, EmailEnv              bool // 환경변수로 제공 중
+	PortalName                         string
 }
 
 func (s *Server) pageSettings(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	samples, _ := s.d.Store.ListStyleSamples(ctx, "", 30)
-	s.render(w, "settings", settingsPage{
-		base: s.base("설정"), Cfg: s.config(), Efforts: []string{"low", "medium", "high", "xhigh", "max"},
+	cfg := s.config()
+	pg := settingsPage{
+		base: s.base(r, "설정"), Efforts: []string{"low", "medium", "high", "xhigh", "max"},
 		Style: s.loadStyle(ctx), Samples: samples,
-	})
+		HasTelegramToken: cfg.Report.Telegram.Token != "", HasEmailPassword: cfg.Report.Email.Password != "",
+		TelegramEnv: os.Getenv("MINWON_TELEGRAM_TOKEN") != "", EmailEnv: os.Getenv("MINWON_SMTP_PASSWORD") != "",
+	}
+	cfg.Report.Telegram.Token, cfg.Report.Email.Password = "", ""
+	pg.Cfg = cfg
+	if s.d.Portal != nil {
+		pg.PortalName = s.d.Portal.Name()
+	}
+	s.render(w, "settings", pg)
+}
+
+type inboxPage struct {
+	base
+	Reports []store.Report
+}
+
+func (s *Server) pageInbox(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	reps, err := s.d.Store.ListReports(ctx, 100)
+	if err != nil {
+		http.Error(w, "보고함을 읽지 못했습니다", http.StatusInternalServerError)
+		return
+	}
+	// 이 화면에서 새 보고를 강조해 보여 준 뒤 읽음 처리한다. 상단 숫자는 읽음 처리 뒤 값이다.
+	_ = s.d.Store.MarkReportsRead(ctx)
+	s.render(w, "inbox", inboxPage{base: s.base(r, "보고함"), Reports: reps})
 }
 
 // findings 는 초안 한 건의 제출 전 점검 결과다.

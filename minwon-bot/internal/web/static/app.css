@@ -25,7 +25,7 @@ h1 { font-size: 22px; margin: 4px 0 14px; } h2 { font-size: 18px; margin: 26px 0
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin: 14px 0; }
 .muted { color: var(--muted); } .small { font-size: 13px; }
 label { display: block; font-weight: 600; margin: 12px 0 4px; }
-input[type=text], input[type=number], select, textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+input[type=text], input[type=number], input[type=password], select, textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
   background: var(--bg); color: var(--text); font: inherit; }
 textarea { resize: vertical; }
 input:focus, textarea:focus, select:focus, button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -54,3 +54,10 @@ footer { max-width: 920px; margin: 0 auto; padding: 0 16px 30px; color: var(--mu
 input.w-240 { max-width: 240px; } input.w-420 { max-width: 420px; }
 .nowrap { white-space: nowrap; } .grow { flex: 1; } .row.top { align-items: flex-start; }
 .note.ok { background: var(--ok-bg); color: var(--ok); }
+.badge.hot { color: var(--block); border-color: var(--block); }
+.note.bad { background: var(--block-bg); color: var(--block); }
+.attn { color: var(--block); margin-top: 4px; }
+.card.unread { border-left: 4px solid var(--accent); }
+input.w-120 { max-width: 120px; } label.check { display: flex; gap: 8px; align-items: center; font-weight: 500; }
+label.check input { width: auto; }
+.card h3:not(:first-child) { margin-top: 22px; }

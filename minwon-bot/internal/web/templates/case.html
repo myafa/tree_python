@@ -1,9 +1,19 @@
 {{define "content"}}
+<div id="page-case"{{if .Polling}} data-polling="1"{{end}}></div>
 {{with .Case}}
 <h1>{{.Title}}
   {{if eq .Status "closed"}}<span class="badge">종결</span>{{else}}<span class="badge ok">진행 중</span>{{end}}</h1>
 <div class="muted small">{{if .Agency}}{{.Agency}} · {{end}}{{fdate .CreatedAt}}</div>
-{{if eq .Status "closed"}}<div class="note">종결 사유: {{.ClosedReason}}</div>{{end}}
+{{if eq .Status "closed"}}<div class="note">종결 사유: {{.ClosedReason}}
+  <div class="row"><button data-action="reopen-case" data-case="{{.ID}}">다시 열기</button></div></div>{{end}}
+{{if .Attention}}<div class="note bad" role="alert">⚠ {{.Attention}}
+  <div class="row"><button data-action="clear-attention" data-case="{{.ID}}">확인했음</button></div></div>{{end}}
+<div class="row small">
+  {{if .AutoOff}}<span class="badge">자동 처리 꺼짐</span>
+  <button data-action="case-auto" data-case="{{.ID}}" data-off="0">자동 처리 켜기</button>
+  {{else if eq .Status "open"}}<button data-action="case-auto" data-case="{{.ID}}" data-off="1">자동 처리 끄기</button>
+  <span class="muted">직접 제출하거나 손보는 동안에는 끄세요. 답변이 오면 설정에 따라 승인 없이 평가하고 재민원 또는 종결합니다.</span>{{end}}
+</div>
 <details class="card"><summary>사실관계와 원하는 결과</summary>
   <p class="pre">{{.Facts}}</p>
   {{if .Desired}}<p class="pre"><strong>원하는 결과:</strong> {{.Desired}}</p>{{end}}
@@ -62,7 +72,8 @@
 
     {{range .Answers}}
     <div class="card" id="answer-{{.A.ID}}">
-      <h3>기관 답변 <span class="muted small">{{if .A.Dept}}{{.A.Dept}} · {{end}}{{fdate .A.ReceivedAt}} 기록</span></h3>
+      <h3>기관 답변 <span class="muted small">{{if .A.Dept}}{{.A.Dept}} · {{end}}{{fdate .A.ReceivedAt}} 기록{{if eq .A.Source "portal"}} · 사이트에서 가져옴{{end}}</span>
+        {{if .Waiting}}<span class="badge draft">자동 처리 중…</span>{{end}}</h3>
       <details><summary>답변 본문</summary><p class="pre">{{.A.Body}}</p></details>
       {{with .Eval}}
         <div class="row"><span class="score">{{.Score}}</span><span class="muted">/ 100</span>

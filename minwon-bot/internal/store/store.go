@@ -33,6 +33,10 @@ type Case struct {
 	Status       string
 	ClosedReason string
 	CreatedAt    time.Time
+	// AutoOff 가 true 면 이 사안은 자동 처리와 주기 점검에서 뺀다.
+	AutoOff bool
+	// Attention 은 사람이 봐야 하는 이유. 비어 있으면 없음.
+	Attention string
 }
 
 type Submission struct {
@@ -56,6 +60,20 @@ type Answer struct {
 	Body         string
 	Dept         string
 	ReceivedAt   time.Time
+	// Source 는 "pasted"(사용자가 붙여넣음) 또는 "portal"(사이트에서 가져옴).
+	Source string
+	// ProcessedAt 은 자동 처리를 마친 시각. zero 면 아직 처리 전이다.
+	ProcessedAt time.Time
+}
+
+type Report struct {
+	ID        int64
+	CaseID    int64
+	Kind      string
+	Title     string
+	Body      string
+	Read      bool
+	CreatedAt time.Time
 }
 
 type Evaluation struct {
@@ -103,7 +121,36 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("스키마 생성 실패: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("스키마 이전 실패: %w", err)
+	}
 	return &Store{db: db, now: time.Now}, nil
+}
+
+// 예전 버전의 DB 에 없는 컬럼을 채운다. 새 DB 도 같은 경로로 만들어 두 경우가 갈라지지 않게 한다.
+var columnMigrations = []struct{ table, column, ddl string }{
+	{"cases", "auto_off", "INTEGER NOT NULL DEFAULT 0"},
+	{"cases", "attention", "TEXT NOT NULL DEFAULT ''"},
+	{"answers", "source", "TEXT NOT NULL DEFAULT 'pasted'"},
+	{"answers", "processed_at", "TEXT NOT NULL DEFAULT ''"},
+}
+
+func migrate(db *sql.DB) error {
+	for _, m := range columnMigrations {
+		var n int
+		if err := db.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, m.table, m.column).Scan(&n); err != nil {
+			return err
+		}
+		if n > 0 {
+			continue
+		}
+		if _, err := db.Exec(`ALTER TABLE ` + m.table + ` ADD COLUMN ` + m.column + ` ` + m.ddl); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -136,40 +183,43 @@ func (s *Store) CreateCase(ctx context.Context, c Case) (int64, error) {
 	return r.LastInsertId()
 }
 
-func (s *Store) GetCase(ctx context.Context, id int64) (Case, error) {
+const caseCols = `id,title,agency,facts,desired,status,closed_reason,created_at,auto_off,attention`
+
+func scanCase(r scanner) (Case, error) {
 	var c Case
 	var created string
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id,title,agency,facts,desired,status,closed_reason,created_at FROM cases WHERE id=?`, id).
-		Scan(&c.ID, &c.Title, &c.Agency, &c.Facts, &c.Desired, &c.Status, &c.ClosedReason, &created)
+	var off int
+	err := r.Scan(&c.ID, &c.Title, &c.Agency, &c.Facts, &c.Desired, &c.Status, &c.ClosedReason, &created, &off, &c.Attention)
+	c.CreatedAt = parseTime(created)
+	c.AutoOff = off != 0
+	return c, err
+}
+
+func (s *Store) GetCase(ctx context.Context, id int64) (Case, error) {
+	c, err := scanCase(s.db.QueryRowContext(ctx, `SELECT `+caseCols+` FROM cases WHERE id=?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, ErrNotFound
 	}
-	c.CreatedAt = parseTime(created)
 	return c, err
 }
 
 func (s *Store) ListCases(ctx context.Context) ([]Case, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id,title,agency,facts,desired,status,closed_reason,created_at FROM cases ORDER BY id DESC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+caseCols+` FROM cases ORDER BY id DESC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []Case
 	for rows.Next() {
-		var c Case
-		var created string
-		if err := rows.Scan(&c.ID, &c.Title, &c.Agency, &c.Facts, &c.Desired, &c.Status, &c.ClosedReason, &created); err != nil {
+		c, err := scanCase(rows)
+		if err != nil {
 			return nil, err
 		}
-		c.CreatedAt = parseTime(created)
 		out = append(out, c)
 	}
 	return out, rows.Err()
 }
 
-// AppendCaseFacts 는 사실관계 끝에 text 를 덧붙인다. 되묻기에 답한 내용을 남길 때 쓴다.
 func (s *Store) AppendCaseFacts(ctx context.Context, id int64, text string) error {
 	r, err := s.db.ExecContext(ctx,
 		`UPDATE cases SET facts = CASE WHEN facts = '' THEN ? ELSE facts || char(10) || ? END WHERE id=?`, text, text, id)
@@ -177,7 +227,29 @@ func (s *Store) AppendCaseFacts(ctx context.Context, id int64, text string) erro
 }
 
 func (s *Store) CloseCase(ctx context.Context, id int64, reason string) error {
-	r, err := s.db.ExecContext(ctx, `UPDATE cases SET status='closed', closed_reason=? WHERE id=?`, reason, id)
+	r, err := s.db.ExecContext(ctx, `UPDATE cases SET status='closed', closed_reason=?, attention='' WHERE id=?`, reason, id)
+	return affected(r, err)
+}
+
+// ReopenCase 는 종결한 사안을 다시 연다. 자동 종결을 되돌릴 때 쓴다.
+func (s *Store) ReopenCase(ctx context.Context, id int64) error {
+	r, err := s.db.ExecContext(ctx, `UPDATE cases SET status='open', closed_reason='' WHERE id=?`, id)
+	return affected(r, err)
+}
+
+// SetCaseAutoOff 는 이 사안을 자동 처리에서 빼거나 다시 넣는다.
+func (s *Store) SetCaseAutoOff(ctx context.Context, id int64, off bool) error {
+	v := 0
+	if off {
+		v = 1
+	}
+	r, err := s.db.ExecContext(ctx, `UPDATE cases SET auto_off=? WHERE id=?`, v, id)
+	return affected(r, err)
+}
+
+// SetAttention 은 사람이 봐야 하는 이유를 적는다. 빈 문자열이면 지운다.
+func (s *Store) SetAttention(ctx context.Context, id int64, text string) error {
+	r, err := s.db.ExecContext(ctx, `UPDATE cases SET attention=? WHERE id=?`, text, id)
 	return affected(r, err)
 }
 
@@ -304,7 +376,13 @@ func (s *Store) LastSubmittedAt(ctx context.Context) (time.Time, error) {
 
 // ---- answers / evaluations ----
 
+// CreateAnswer 는 사용자가 붙여넣은 답변을 기록한다.
 func (s *Store) CreateAnswer(ctx context.Context, submissionID int64, body, dept string) (Answer, error) {
+	return s.CreateAnswerFrom(ctx, submissionID, body, dept, "pasted")
+}
+
+// CreateAnswerFrom 은 출처(pasted|portal)를 지정해 답변을 기록한다.
+func (s *Store) CreateAnswerFrom(ctx context.Context, submissionID int64, body, dept, source string) (Answer, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Answer{}, err
@@ -312,7 +390,8 @@ func (s *Store) CreateAnswer(ctx context.Context, submissionID int64, body, dept
 	defer tx.Rollback()
 	now := s.ts()
 	r, err := tx.ExecContext(ctx,
-		`INSERT INTO answers(submission_id,body,dept,received_at) VALUES(?,?,?,?)`, submissionID, body, dept, now)
+		`INSERT INTO answers(submission_id,body,dept,received_at,source) VALUES(?,?,?,?,?)`,
+		submissionID, body, dept, now, source)
 	if err != nil {
 		return Answer{}, err
 	}
@@ -327,38 +406,85 @@ func (s *Store) CreateAnswer(ctx context.Context, submissionID int64, body, dept
 	if err := tx.Commit(); err != nil {
 		return Answer{}, err
 	}
-	return Answer{ID: id, SubmissionID: submissionID, Body: body, Dept: dept, ReceivedAt: parseTime(now)}, nil
+	return Answer{ID: id, SubmissionID: submissionID, Body: body, Dept: dept, ReceivedAt: parseTime(now), Source: source}, nil
 }
 
-func (s *Store) GetAnswer(ctx context.Context, id int64) (Answer, error) {
+const answerCols = `a.id,a.submission_id,a.body,a.dept,a.received_at,a.source,a.processed_at`
+
+func scanAnswer(r scanner) (Answer, error) {
 	var a Answer
-	var rec string
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id,submission_id,body,dept,received_at FROM answers WHERE id=?`, id).
-		Scan(&a.ID, &a.SubmissionID, &a.Body, &a.Dept, &rec)
-	if errors.Is(err, sql.ErrNoRows) {
-		return a, ErrNotFound
-	}
+	var rec, proc string
+	err := r.Scan(&a.ID, &a.SubmissionID, &a.Body, &a.Dept, &rec, &a.Source, &proc)
 	a.ReceivedAt = parseTime(rec)
+	a.ProcessedAt = parseTime(proc)
 	return a, err
 }
 
-func (s *Store) ListAnswers(ctx context.Context, submissionID int64) ([]Answer, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id,submission_id,body,dept,received_at FROM answers WHERE submission_id=? ORDER BY id`, submissionID)
+func (s *Store) GetAnswer(ctx context.Context, id int64) (Answer, error) {
+	a, err := scanAnswer(s.db.QueryRowContext(ctx, `SELECT `+answerCols+` FROM answers a WHERE a.id=?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return a, ErrNotFound
+	}
+	return a, err
+}
+
+func (s *Store) queryAnswers(ctx context.Context, q string, args ...any) ([]Answer, error) {
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []Answer
 	for rows.Next() {
-		var a Answer
-		var rec string
-		if err := rows.Scan(&a.ID, &a.SubmissionID, &a.Body, &a.Dept, &rec); err != nil {
+		a, err := scanAnswer(rows)
+		if err != nil {
 			return nil, err
 		}
-		a.ReceivedAt = parseTime(rec)
 		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListAnswers(ctx context.Context, submissionID int64) ([]Answer, error) {
+	return s.queryAnswers(ctx,
+		`SELECT `+answerCols+` FROM answers a WHERE a.submission_id=? ORDER BY a.id`, submissionID)
+}
+
+// ListPendingAnswers 는 아직 자동 처리하지 않은 답변이다. 종결되었거나 자동 처리를 끈 사안은 뺀다.
+func (s *Store) ListPendingAnswers(ctx context.Context) ([]Answer, error) {
+	return s.queryAnswers(ctx,
+		`SELECT `+answerCols+` FROM answers a
+		 JOIN submissions sub ON sub.id = a.submission_id
+		 JOIN cases c ON c.id = sub.case_id
+		 WHERE a.processed_at = '' AND c.status = 'open' AND c.auto_off = 0
+		 ORDER BY a.id`)
+}
+
+// MarkAnswerProcessed 는 답변의 자동 처리를 마쳤다고 표시한다.
+func (s *Store) MarkAnswerProcessed(ctx context.Context, id int64) error {
+	r, err := s.db.ExecContext(ctx, `UPDATE answers SET processed_at=? WHERE id=?`, s.ts(), id)
+	return affected(r, err)
+}
+
+// ListAwaitingSubmissions 는 제출했지만 답변을 기록하지 않은 건이다(사이트 점검 대상).
+func (s *Store) ListAwaitingSubmissions(ctx context.Context) ([]Submission, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT sub.id,sub.case_id,sub.round,sub.kind,sub.draft_json,sub.title,sub.body,sub.asks_json,
+		        sub.status,sub.receipt_no,sub.submitted_at,sub.created_at
+		 FROM submissions sub JOIN cases c ON c.id = sub.case_id
+		 WHERE sub.status = 'submitted' AND sub.receipt_no != '' AND c.status = 'open' AND c.auto_off = 0
+		 ORDER BY sub.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Submission
+	for rows.Next() {
+		x, err := scanSubmission(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, x)
 	}
 	return out, rows.Err()
 }
@@ -420,6 +546,68 @@ func (s *Store) ListEvents(ctx context.Context, caseID int64) ([]Event, error) {
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// ---- reports ----
+
+func (s *Store) AddReport(ctx context.Context, r Report) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO reports(case_id,kind,title,body,created_at) VALUES(?,?,?,?,?)`,
+		r.CaseID, r.Kind, r.Title, r.Body, s.ts())
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func scanReport(r scanner) (Report, error) {
+	var x Report
+	var read int
+	var at string
+	err := r.Scan(&x.ID, &x.CaseID, &x.Kind, &x.Title, &x.Body, &read, &at)
+	x.Read = read != 0
+	x.CreatedAt = parseTime(at)
+	return x, err
+}
+
+// ListReports 는 최근 보고부터 limit 개다.
+func (s *Store) ListReports(ctx context.Context, limit int) ([]Report, error) {
+	return s.queryReports(ctx, `SELECT id,case_id,kind,title,body,read,created_at FROM reports ORDER BY id DESC LIMIT ?`, limit)
+}
+
+// ReportsSince 는 since 이후의 보고를 오래된 순으로 돌려준다. 하루 요약에 쓴다.
+func (s *Store) ReportsSince(ctx context.Context, since time.Time) ([]Report, error) {
+	return s.queryReports(ctx,
+		`SELECT id,case_id,kind,title,body,read,created_at FROM reports WHERE created_at >= ? ORDER BY id`,
+		since.UTC().Format(timeLayout))
+}
+
+func (s *Store) queryReports(ctx context.Context, q string, args ...any) ([]Report, error) {
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Report
+	for rows.Next() {
+		x, err := scanReport(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) CountUnreadReports(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM reports WHERE read = 0`).Scan(&n)
+	return n, err
+}
+
+func (s *Store) MarkReportsRead(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE reports SET read = 1 WHERE read = 0`)
+	return err
 }
 
 // ---- settings / style ----

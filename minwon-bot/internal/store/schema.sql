@@ -66,3 +66,14 @@ CREATE TABLE IF NOT EXISTS style_samples (
   original   TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
+
+-- 사후보고함. 자동 처리 결과와 주의가 필요한 일을 쌓아 둔다.
+CREATE TABLE IF NOT EXISTS reports (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  case_id    INTEGER NOT NULL DEFAULT 0,
+  kind       TEXT NOT NULL,
+  title      TEXT NOT NULL,
+  body       TEXT NOT NULL DEFAULT '',
+  read       INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);

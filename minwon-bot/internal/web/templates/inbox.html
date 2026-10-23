@@ -1,0 +1,12 @@
+{{define "content"}}
+<h1>보고함</h1>
+<p class="muted small">자동 처리 결과와 확인이 필요한 일이 여기에 쌓입니다. 텔레그램·이메일로도 받으려면 <a href="/settings">설정</a>에서 연결하세요.</p>
+{{if not .Reports}}<div class="card"><p class="muted">아직 보고가 없습니다.</p></div>{{end}}
+{{range .Reports}}
+<div class="card{{if not .Read}} unread{{end}}">
+  <h3>{{.Title}} <span class="badge">{{reportLabel .Kind}}</span></h3>
+  <div class="muted small">{{fdate .CreatedAt}}{{if .CaseID}} · <a href="/cases/{{.CaseID}}">사안 #{{.CaseID}}</a>{{end}}</div>
+  {{if .Body}}<details {{if not .Read}}open{{end}}><summary>내용</summary><p class="pre">{{.Body}}</p></details>{{end}}
+</div>
+{{end}}
+{{end}}

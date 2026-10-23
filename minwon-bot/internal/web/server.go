@@ -21,9 +21,12 @@ import (
 	"sync"
 	"time"
 
+	"minwon-bot/internal/auto"
 	"minwon-bot/internal/config"
 	"minwon-bot/internal/llm"
 	"minwon-bot/internal/minwon"
+	"minwon-bot/internal/portal"
+	"minwon-bot/internal/report"
 	"minwon-bot/internal/store"
 )
 
@@ -37,6 +40,10 @@ type Deps struct {
 	// NewLLM 은 설정으로 AI 백엔드를 만든다. 비우면 DefaultLLM.
 	NewLLM func(config.Config) llm.LLM
 	Now    func() time.Time
+	// Portal 은 사이트 연동이다. nil 이면 연동 없이 쓰는 것이다(재민원은 초안까지만 자동으로 만든다).
+	Portal portal.Portal
+	// Lock 은 AI 를 부르며 상태를 바꾸는 작업을 한 번에 하나만 하게 한다. 비우면 내부에서 만든다.
+	Lock sync.Locker
 }
 
 // DefaultLLM 은 설정에 맞는 백엔드를 만든다.
@@ -57,9 +64,11 @@ type Server struct {
 	cfg config.Config
 	llm llm.LLM
 
-	// op 는 AI 를 부르며 상태를 바꾸는 작업을 한 번에 하나만 하게 한다.
-	op sync.Mutex
+	runner *auto.Runner
 }
+
+// Runner 는 답변 자동 처리 실행기다. main 이 Start 를 불러 주기 점검을 돌린다.
+func (s *Server) Runner() *auto.Runner { return s.runner }
 
 func New(d Deps) (*Server, error) {
 	if d.Now == nil {
@@ -68,12 +77,20 @@ func New(d Deps) (*Server, error) {
 	if d.NewLLM == nil {
 		d.NewLLM = DefaultLLM
 	}
+	if d.Lock == nil {
+		d.Lock = &sync.Mutex{}
+	}
 	tok := make([]byte, 16)
 	if _, err := rand.Read(tok); err != nil {
 		return nil, err
 	}
 	s := &Server{d: d, csrf: hex.EncodeToString(tok), cfg: d.Config, llm: d.NewLLM(d.Config), pages: map[string]*template.Template{}}
-	for _, name := range []string{"cases", "case_new", "case", "settings"} {
+	s.runner = auto.New(auto.Deps{
+		Store: d.Store, Portal: d.Portal, Service: s.svc, Config: s.config,
+		Reporter: func() report.Reporter { return report.Build(s.config(), d.Store) },
+		Style:    s.loadStyle, Now: d.Now, Lock: d.Lock,
+	})
+	for _, name := range []string{"cases", "case_new", "case", "settings", "inbox"} {
 		t, err := template.New("").Funcs(funcs).ParseFS(assets, "templates/layout.html", "templates/"+name+".html")
 		if err != nil {
 			return nil, fmt.Errorf("템플릿 %s: %w", name, err)
@@ -90,10 +107,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /cases", s.postCase)
 	mux.HandleFunc("GET /cases/{id}", s.pageCase)
 	mux.HandleFunc("GET /settings", s.pageSettings)
+	mux.HandleFunc("GET /inbox", s.pageInbox)
 	mux.Handle("GET /static/", http.FileServerFS(assets))
 
 	mux.HandleFunc("POST /api/cases/{id}/draft", s.apiDraft)
 	mux.HandleFunc("POST /api/cases/{id}/close", s.apiClose)
+	mux.HandleFunc("POST /api/cases/{id}/reopen", s.apiReopen)
+	mux.HandleFunc("POST /api/cases/{id}/auto", s.apiCaseAuto)
+	mux.HandleFunc("POST /api/cases/{id}/attention/clear", s.apiAttentionClear)
+	mux.HandleFunc("POST /api/auto/run", s.apiAutoRun)
+	mux.HandleFunc("POST /api/report/test", s.apiReportTest)
+	mux.HandleFunc("POST /api/report/clear", s.apiReportClear)
 	mux.HandleFunc("POST /api/submissions/{id}/save", s.apiSave)
 	mux.HandleFunc("POST /api/submissions/{id}/submitted", s.apiSubmitted)
 	mux.HandleFunc("POST /api/submissions/{id}/discard", s.apiDiscard)
@@ -191,10 +215,12 @@ const styleKey = "style_profile"
 
 type base struct {
 	Title, CSRF, Backend string
+	Unread               int
 }
 
-func (s *Server) base(title string) base {
-	return base{Title: title, CSRF: s.csrf, Backend: s.backendName()}
+func (s *Server) base(r *http.Request, title string) base {
+	n, _ := s.d.Store.CountUnreadReports(r.Context())
+	return base{Title: title, CSRF: s.csrf, Backend: s.backendName(), Unread: n}
 }
 
 func (s *Server) render(w http.ResponseWriter, page string, data any) {
@@ -295,10 +321,18 @@ var funcs = template.FuncMap{
 			minwon.RecOtherRoute: "다른 경로 권고", minwon.RecHold: "판단 보류",
 		}[v]
 	},
+	"reportLabel": func(v string) string {
+		return map[string]string{
+			report.KindFollowUpSubmitted: "재민원 제출", report.KindFollowUpDrafted: "재민원 초안",
+			report.KindClosed: "종결", report.KindHold: "확인 필요", report.KindAttention: "주의",
+			report.KindDaily: "하루 요약", report.KindTest: "시험",
+		}[v]
+	},
 	"eventLabel": func(v string) string {
 		if l, ok := map[string]string{
 			"draft_created": "초안 작성", "followup_created": "재민원 초안 작성", "submitted": "제출 기록",
 			"answer_added": "답변 기록", "evaluated": "답변 평가", "closed": "사안 종결", "discarded": "초안 버림",
+			"reopened": "다시 열기", "report_failed": "보고 전송 실패", "auto_on": "자동 처리 켬", "auto_off": "자동 처리 끔",
 		}[v]; ok {
 			return l
 		}
