@@ -1,0 +1,72 @@
+{{define "content"}}
+<h1>설정</h1>
+
+<div class="card">
+  <h3>AI 연결</h3>
+  <label for="s-backend">방식</label>
+  <select id="s-backend">
+    <option value="claude_code" {{if eq .Cfg.LLM.Backend "claude_code"}}selected{{end}}>Claude Code 구독 (추가 크레딧 없음, 기본)</option>
+    <option value="api" {{if eq .Cfg.LLM.Backend "api"}}selected{{end}}>Anthropic API 키 (호출마다 토큰 과금)</option>
+  </select>
+  <p class="muted small">구독 방식은 이 PC 에 설치되어 로그인된 <code>claude</code> 를 부릅니다. 사용량은 구독 한도에서 차감됩니다.
+  API 방식은 환경변수 <code>ANTHROPIC_API_KEY</code> 를 읽으며, 키를 파일에 저장하지 않습니다. 호출 1회당 약 100~300원으로 추정합니다.</p>
+  <div class="grid2">
+    <div><label for="s-model">모델</label><input type="text" id="s-model" value="{{.Cfg.LLM.Model}}">
+      <div class="muted small">구독: opus, sonnet 등 별칭 · API: claude-opus-5-5 같은 모델 ID</div></div>
+    <div><label for="s-effort">추론 강도 (API 방식에서만 적용)</label>
+      <select id="s-effort">{{range .Efforts}}<option value="{{.}}" {{if eq . $.Cfg.LLM.Effort}}selected{{end}}>{{.}}</option>{{end}}</select></div>
+    <div><label for="s-bin">claude 실행 파일 경로 <span class="muted small">(비우면 자동)</span></label>
+      <input type="text" id="s-bin" value="{{.Cfg.LLM.ClaudeBin}}"></div>
+    <div><label for="s-timeout">호출 제한 시간(초)</label><input type="number" id="s-timeout" value="{{.Cfg.LLM.TimeoutSec}}"></div>
+  </div>
+  <div class="row">
+    <button class="primary" data-action="save-settings">저장</button>
+    <button data-action="llm-test">연결 테스트</button>
+  </div>
+</div>
+
+<div class="card">
+  <h3>제출 한도</h3>
+  <p class="muted small">반복·자동 민원은 종결 처리되거나 이용이 제한될 수 있어 기본값을 보수적으로 둡니다.</p>
+  <div class="grid2">
+    <div><label for="s-daily">하루 최대 제출 건수</label><input type="number" id="s-daily" value="{{.Cfg.Limits.DailyMax}}"></div>
+    <div><label for="s-gap">제출 사이 최소 간격(분)</label><input type="number" id="s-gap" value="{{.Cfg.Limits.MinGapMinutes}}"></div>
+    <div><label for="s-repeat">이 회차부터 반복민원으로 경고</label><input type="number" id="s-repeat" value="{{.Cfg.Limits.RepeatRound}}"></div>
+    <div><label for="s-sim">이전 회차와 유사도 경고 기준(0~1)</label><input type="number" step="0.05" id="s-sim" value="{{.Cfg.Limits.Similarity}}"></div>
+  </div>
+  <div class="row"><button class="primary" data-action="save-settings">저장</button></div>
+</div>
+
+<div class="card">
+  <h3>AI 에 보내기 전에 가릴 낱말</h3>
+  <p class="muted small">한 줄에 하나. 주민번호·전화번호·이메일·계좌번호는 자동으로 가립니다. 이름, 부대명 같은 낱말은 여기에 적으세요.
+  종류를 앞에 붙이면 AI 가 문맥을 더 잘 이해합니다. 예: <code>이름:홍길동</code>, <code>부대:제7사단</code>, <code>기관:국방부</code></p>
+  <textarea id="s-mask" rows="5">{{join .Cfg.MaskTerms "\n"}}</textarea>
+  <div class="row"><button class="primary" data-action="save-settings">저장</button></div>
+</div>
+
+<div class="card">
+  <h3>내 문체</h3>
+  <p class="muted small">예전에 직접 쓴 민원이나 글을 3~5개 붙여넣고 "문체 학습"을 누르면, 초안과 재민원이 내가 쓴 것처럼 나옵니다.
+  초안을 고쳐서 제출하면 그 차이도 자동으로 학습 재료가 됩니다. 글 속 개인정보는 AI 에 보내기 전에 가려집니다.</p>
+  {{if .Style}}
+  <div class="note ok">
+    <strong>학습된 프로필</strong><div class="pre">{{.Style.Prompt}}</div>
+  </div>
+  {{else}}<p class="muted">아직 학습된 문체가 없습니다.</p>{{end}}
+  {{range .Samples}}
+  <div class="row top">
+    <div class="grow small"><span class="badge">{{if eq .Kind "edit"}}고친 초안{{else}}붙여넣은 글{{end}}</span>
+      <span class="muted">{{excerpt .Text 120}}</span></div>
+    <button class="danger" data-action="style-delete" data-id="{{.ID}}">삭제</button>
+  </div>
+  {{end}}
+  <label for="style-text">글 붙여넣기</label>
+  <textarea id="style-text" rows="6"></textarea>
+  <div class="row">
+    <button data-action="style-add">글 추가</button>
+    <button class="primary" data-action="style-extract">문체 학습</button>
+    {{if .Style}}<button class="danger" data-action="style-reset">프로필 지우기</button>{{end}}
+  </div>
+</div>
+{{end}}

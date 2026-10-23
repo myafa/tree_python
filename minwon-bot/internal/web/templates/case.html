@@ -1,0 +1,119 @@
+{{define "content"}}
+{{with .Case}}
+<h1>{{.Title}}
+  {{if eq .Status "closed"}}<span class="badge">종결</span>{{else}}<span class="badge ok">진행 중</span>{{end}}</h1>
+<div class="muted small">{{if .Agency}}{{.Agency}} · {{end}}{{fdate .CreatedAt}}</div>
+{{if eq .Status "closed"}}<div class="note">종결 사유: {{.ClosedReason}}</div>{{end}}
+<details class="card"><summary>사실관계와 원하는 결과</summary>
+  <p class="pre">{{.Facts}}</p>
+  {{if .Desired}}<p class="pre"><strong>원하는 결과:</strong> {{.Desired}}</p>{{end}}
+</details>
+{{end}}
+
+{{if and (not .Subs) (eq .Case.Status "open")}}
+<div class="card" id="draft-box">
+  <h3>초안 작성</h3>
+  <p class="muted">AI 가 위 내용으로 민원 초안과 질의 항목을 씁니다. 정보가 모자라면 먼저 되묻습니다.{{if .HasStyle}} 학습된 내 문체를 적용합니다.{{else}} <a href="/settings">설정</a>에서 내가 쓴 글을 붙여넣으면 내 문체로 씁니다.{{end}}</p>
+  <div id="qa-box"></div>
+  <div class="row"><button class="primary" data-action="draft" data-case="{{.Case.ID}}">초안 작성</button></div>
+</div>
+{{end}}
+
+{{range .Subs}}
+<section class="card" id="sub-{{.S.ID}}">
+  <h3>{{.S.Round}}회차 {{if eq .S.Kind "followup"}}재민원{{else}}민원{{end}}
+    {{if eq .S.Status "draft"}}<span class="badge draft">초안</span>
+    {{else if eq .S.Status "submitted"}}<span class="badge">제출함 · 답변 대기</span>
+    {{else}}<span class="badge ok">답변 받음</span>{{end}}</h3>
+
+  {{if eq .S.Status "draft"}}
+    <ul class="findings" id="findings-{{.S.ID}}">
+      {{range .Findings}}<li class="{{.Severity}}">{{.Message}}</li>{{end}}
+    </ul>
+    {{with .Draft}}
+      {{if .VisibilityReason}}<div class="note small">공개 여부 권고: <strong>{{if eq .Visibility "public"}}공개 가능{{else}}비공개{{end}}</strong> — {{.VisibilityReason}}</div>{{end}}
+      {{range .Warnings}}<div class="note small">{{.}}</div>{{end}}
+    {{end}}
+    <label for="title-{{.S.ID}}">제목</label>
+    <input type="text" id="title-{{.S.ID}}" value="{{.S.Title}}">
+    <label for="body-{{.S.ID}}">본문</label>
+    <textarea id="body-{{.S.ID}}" rows="18">{{.S.Body}}</textarea>
+    <label for="asks-{{.S.ID}}">질의 항목 <span class="muted small">(한 줄에 하나. 답변이 오면 이 항목마다 답했는지 판정합니다)</span></label>
+    <textarea id="asks-{{.S.ID}}" rows="4">{{join .Asks "\n"}}</textarea>
+    <div class="row">
+      <button class="primary" data-action="save" data-sub="{{.S.ID}}">저장하고 점검</button>
+      <button data-action="copy" data-target="title-{{.S.ID}}">제목 복사</button>
+      <button data-action="copy" data-target="body-{{.S.ID}}">본문 복사</button>
+    </div>
+    <hr>
+    <p class="muted small">국민신문고에서 직접 제출한 뒤, 받은 접수번호를 기록하세요. 이 앱은 사이트에 자동으로 제출하지 않습니다.</p>
+    <div class="row">
+      <input type="text" id="receipt-{{.S.ID}}" placeholder="접수번호" class="w-240">
+      <button data-action="submitted" data-sub="{{.S.ID}}">제출 기록</button>
+      <button class="danger" data-action="discard" data-sub="{{.S.ID}}">초안 버리기</button>
+    </div>
+  {{else}}
+    <div class="muted small">접수번호 {{.S.ReceiptNo}} · 제출 {{fdate .S.SubmittedAt}}</div>
+    <p><strong>{{.S.Title}}</strong></p>
+    <details><summary>제출한 본문과 질의 항목</summary>
+      <p class="pre">{{.S.Body}}</p>
+      <ol>{{range .Asks}}<li>{{.}}</li>{{end}}</ol>
+    </details>
+
+    {{range .Answers}}
+    <div class="card" id="answer-{{.A.ID}}">
+      <h3>기관 답변 <span class="muted small">{{if .A.Dept}}{{.A.Dept}} · {{end}}{{fdate .A.ReceivedAt}} 기록</span></h3>
+      <details><summary>답변 본문</summary><p class="pre">{{.A.Body}}</p></details>
+      {{with .Eval}}
+        <div class="row"><span class="score">{{.Score}}</span><span class="muted">/ 100</span>
+          <span class="badge">{{recLabel .Recommendation}}</span></div>
+        <p>{{.Summary}}</p>
+        <table>
+          <tr><th>질의</th><th>판정</th><th>이유와 근거</th></tr>
+          {{range .Items}}
+          <tr><td>{{.Ask}}</td>
+              <td class="v-{{.Verdict}}">{{verdictLabel .Verdict}}<div class="muted small">확신 {{confLabel .Confidence}}</div></td>
+              <td>{{.Reason}}{{if .Evidence}}<div class="muted small pre">“{{.Evidence}}”</div>{{end}}</td></tr>
+          {{end}}
+        </table>
+        <p><strong>권고:</strong> {{.RecommendationReason}}</p>
+        {{if .OtherRoutes}}<p><strong>다른 경로:</strong></p><ul>{{range .OtherRoutes}}<li>{{.}}</li>{{end}}</ul>{{end}}
+        {{if .LegalRefs}}<p><strong>AI 가 든 법령 (확인 필요):</strong></p>
+          <ul>{{range .LegalRefs}}<li>{{if .URL}}<a href="{{.URL}}" target="_blank" rel="noopener noreferrer">{{.Name}}</a>{{else}}{{.Name}}{{end}} {{.Article}} — {{.Relevance}}</li>{{end}}</ul>{{end}}
+        {{range .Notes}}<div class="note small">{{.}}</div>{{end}}
+      {{end}}
+      <div class="row">
+        <button class="primary" data-action="evaluate" data-answer="{{.A.ID}}">{{if .Eval}}다시 평가{{else}}답변 평가{{end}}</button>
+        {{if and .Eval $.CanFollowUp}}<button data-action="followup" data-answer="{{.A.ID}}">재민원 초안 만들기</button>{{end}}
+      </div>
+    </div>
+    {{end}}
+
+    <details {{if not .Answers}}open{{end}}><summary>받은 답변 붙여넣기</summary>
+      <label for="answer-dept-{{.S.ID}}">답변 부서 <span class="muted small">(선택)</span></label>
+      <input type="text" id="answer-dept-{{.S.ID}}">
+      <label for="answer-body-{{.S.ID}}">답변 본문</label>
+      <textarea id="answer-body-{{.S.ID}}" rows="8"></textarea>
+      <div class="row"><button data-action="answer-add" data-sub="{{.S.ID}}">답변 저장</button></div>
+    </details>
+  {{end}}
+</section>
+{{end}}
+
+{{if eq .Case.Status "open"}}
+{{if .Subs}}
+<div class="card">
+  <h3>사안 종결</h3>
+  <p class="muted small">더 낼 민원이 없을 때 종결합니다. 종결해도 기록은 남습니다.</p>
+  <div class="row"><input type="text" id="close-reason" placeholder="종결 사유 (예: 질의에 충분히 답변받음)" class="w-420">
+    <button data-action="close-case" data-case="{{.Case.ID}}">종결</button></div>
+</div>
+{{end}}
+{{end}}
+
+{{if .Events}}
+<details class="card"><summary>활동 기록</summary>
+  <table>{{range .Events}}<tr><td class="muted small nowrap">{{fdate .At}}</td><td>{{eventLabel .Kind}} {{.Detail}}</td></tr>{{end}}</table>
+</details>
+{{end}}
+{{end}}

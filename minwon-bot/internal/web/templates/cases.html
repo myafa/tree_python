@@ -1,0 +1,17 @@
+{{define "content"}}
+<h1>사안</h1>
+{{if not .Cases}}
+<div class="card">
+  <p>아직 사안이 없습니다. 먼저 <a href="/settings">설정</a>에서 AI 연결을 확인하고, <a href="/cases/new">새 사안</a>을 만들어 보세요.</p>
+</div>
+{{else}}
+{{range .Cases}}
+<div class="card">
+  <h3><a href="/cases/{{.ID}}">{{.Title}}</a>
+    {{if eq .Status "closed"}}<span class="badge">종결</span>{{else}}<span class="badge ok">진행 중</span>{{end}}</h3>
+  <div class="muted small">{{if .Agency}}{{.Agency}} · {{end}}{{fdate .CreatedAt}}</div>
+</div>
+{{end}}
+{{end}}
+<p><a class="btn primary" href="/cases/new">새 사안</a></p>
+{{end}}

@@ -1,0 +1,7 @@
+# 실행 파일과 로컬 데이터
+/minwon-bot
+/minwon-bot.exe
+*.db
+*.db-wal
+*.db-shm
+dist/

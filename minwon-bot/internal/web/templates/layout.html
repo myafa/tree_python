@@ -1,0 +1,24 @@
+{{define "layout"}}<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="csrf" content="{{.CSRF}}">
+<meta name="color-scheme" content="light dark">
+<title>{{.Title}} · 민원 도우미</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top"><div class="in">
+  <a class="brand" href="/">민원 도우미</a>
+  <nav><a href="/">사안</a><a href="/cases/new">새 사안</a><a href="/settings">설정</a></nav>
+  <span class="backend">{{.Backend}}</span>
+</div></header>
+<main>
+{{template "content" .}}
+</main>
+<footer>작성·평가 보조 도구입니다. 법률 자문이 아니며, 제출 전 내용은 직접 확인하세요. 이 화면은 이 PC 안에서만 열립니다.</footer>
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>{{end}}
