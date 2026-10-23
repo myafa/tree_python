@@ -85,13 +85,21 @@ func (r *Runner) ProcessAnswer(ctx context.Context, ans store.Answer) {
 	}
 	cfg := r.d.Config()
 
+	subs, err := r.d.Store.ListSubmissions(ctx, c.ID)
+	if err != nil {
+		return
+	}
+	// 이미 다음 회차를 제출했다면 이 답변은 지난 회차의 것이다. 뒤늦게 처리하면 진행 중인 회차를 무시하고
+	// 사안을 종결하거나 중복 재민원을 만들 수 있으므로, 아무 조치 없이 처리 표시만 한다.
+	if sub.Round < maxRound(subs) {
+		_ = r.d.Store.MarkAnswerProcessed(ctx, cur.ID)
+		_ = r.d.Store.AddEvent(ctx, c.ID, "answer_added", fmt.Sprintf("(%d회차 답변은 이미 다음 회차가 진행 중이라 자동 처리하지 않음)", sub.Round))
+		return
+	}
+
 	ev, err := r.evaluate(ctx, c, sub, cur)
 	if err != nil {
 		r.failed(ctx, c, cur, "답변 평가", err)
-		return
-	}
-	subs, err := r.d.Store.ListSubmissions(ctx, c.ID)
-	if err != nil {
 		return
 	}
 	dec := decide(cfg, maxRound(subs)+1, ev)

@@ -695,3 +695,24 @@ func TestDailySummary(t *testing.T) {
 		t.Error("-1 이면 보내지 않음")
 	}
 }
+
+func TestStaleAnswerFromEarlierRoundIsIgnored(t *testing.T) {
+	// 1회차 답변이 처리되지 않은 채로 사용자가 직접 2회차를 제출했다. 자동 처리를 다시 켜도
+	// 지난 회차의 답변 때문에 사안을 종결하거나 재민원을 또 만들면 안 된다.
+	h := newHarness(t, true)
+	ctx := context.Background()
+	c, ans := h.answeredCase(1)
+	sub2, _ := h.st.CreateSubmission(ctx, c.ID, "followup", "", "직접 낸 재민원", "직접 쓴 본문", `["질문"]`)
+	h.st.MarkSubmitted(ctx, sub2.ID, "R2")
+
+	h.process(ans)
+	if h.caseNow(c.ID).Status != "open" || h.evalCalls != 0 || h.followCall != 0 || h.portal.SubmittedCount() != 0 {
+		t.Fatalf("지난 회차 답변은 아무 조치도 하면 안 됨: status=%s eval=%d follow=%d", h.caseNow(c.ID).Status, h.evalCalls, h.followCall)
+	}
+	if h.answerNow(ans.ID).ProcessedAt.IsZero() {
+		t.Error("다시 처리되지 않도록 처리 표시는 해야 함")
+	}
+	if len(h.rep.kinds()) != 0 {
+		t.Errorf("보고할 일이 아님: %v", h.rep.kinds())
+	}
+}

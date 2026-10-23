@@ -26,6 +26,14 @@ import (
 const defaultPort = 8745
 
 func main() {
+	// minwon-bot snapshot ... : 사이트 화면 구조를 안전하게 저장한다(사이트 연동 개발용).
+	if len(os.Args) > 1 && os.Args[1] == "snapshot" {
+		if err := runSnapshot(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "오류:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	port := flag.Int("port", defaultPort, "화면을 열 포트(사용 중이면 빈 포트를 고릅니다)")
 	noBrowser := flag.Bool("no-browser", false, "브라우저를 자동으로 열지 않습니다")
 	flag.Parse()
