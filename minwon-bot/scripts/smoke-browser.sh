@@ -95,23 +95,34 @@ TOK=$(grep -oE 'name="csrf" content="[0-9a-f]+"' "$WORK/snapshot.html" | sed -E 
 [ -n "$TOK" ] || fail "화면에서 요청 토큰을 읽지 못했습니다"
 
 # api <동작> [JSON] : 화면의 버튼이 부르는 것과 같은 요청. 응답은 $WORK/<동작>.json, 출력은 상태 코드.
+# 본문은 파일로 보낸다. Windows 에서 Git Bash 가 일반 Windows 프로그램(curl.exe)에 한글 인자를 넘기면
+# 시스템 코드 페이지로 바뀌며 깨진다(홍길동 → ???). 파일 내용은 바이트 그대로 전달된다.
 api() {
   local data=${2:-}
   [ -n "$data" ] || data='{}'
+  printf '%s' "$data" > "$WORK/$1.req"
   curl -sS -X POST -H 'Content-Type: application/json' -H "X-CSRF-Token: $TOK" \
-    -d "$data" -o "$WORK/$1.json" -w '%{http_code}' "$URL/api/snapshot/$1"
+    --data-binary @"$WORK/$1.req" -o "$WORK/$1.json" -w '%{http_code}' "$URL/api/snapshot/$1"
 }
 
-# 이름은 \u 표기로 보낸다(Windows 에서 명령 인자의 한글이 깨지지 않게).
+# 실패했을 때 서버가 저장한 가릴 낱말을 보여 준다(시험용 설정이라 비밀 값은 없다).
+mask_diag() {
+  echo "가릴 이름 응답: $(cat "$WORK/mask.json" 2>/dev/null)"
+  echo "저장된 설정:"
+  cat "$MINWON_HOME/config.json" 2>/dev/null || true
+}
+
 code=$(api mask '{"name":"홍길동"}')
-[ "$code" = 200 ] || fail "가릴 이름 추가 응답 $code: $(cat "$WORK/mask.json")"
+[ "$code" = 200 ] && grep -q '"added":true' "$WORK/mask.json" || fail "가릴 이름 추가 응답 $code: $(mask_diag)"
+echo "확인: 가릴 이름 추가"
 code=$(api start '{"url":"http://127.0.0.1:18799/"}')
 [ "$code" = 200 ] && grep -q '"open":true' "$WORK/start.json" || fail "브라우저 열기 응답 $code: $(cat "$WORK/start.json")"
 echo "확인: 브라우저 열기"
 code=$(api capture)
 [ "$code" = 200 ] && grep -q '"saved":1' "$WORK/capture.json" || fail "지금 화면 저장 응답 $code: $(cat "$WORK/capture.json")"
 for want in '[form]' '== frame-1' '{{NAME_1}}' "onclick=\\\"fn_view('2AA-1')\\\""; do
-  grep -qF "$want" "$WORK/capture.json" || fail "모은 글에 $want 가 없습니다: $(cat "$WORK/capture.json")"
+  grep -qF "$want" "$WORK/capture.json" || fail "모은 글에 $want 가 없습니다: $(cat "$WORK/capture.json")
+$(mask_diag)"
 done
 echo "확인: 지금 화면 저장"
 code=$(api stop)
