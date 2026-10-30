@@ -25,23 +25,42 @@ import (
 
 const defaultPort = 8745
 
-func main() {
+// version 은 빌드할 때 -ldflags "-X main.version=..." 로 넣는다(배포판은 커밋 해시).
+var version = "dev"
+
+func versionString() string {
+	return fmt.Sprintf("minwon-bot %s (%s/%s, %s)", version, runtime.GOOS, runtime.GOARCH, runtime.Version())
+}
+
+func main() { os.Exit(realMain()) }
+
+// realMain 은 종료 코드를 돌려준다. os.Exit 를 여기서 부르지 않아야 defer(콘솔 설정 복원)가 실행된다.
+func realMain() int {
+	restore := setupConsole()
+	defer restore()
+
 	// minwon-bot snapshot ... : 사이트 화면 구조를 안전하게 저장한다(사이트 연동 개발용).
 	if len(os.Args) > 1 && os.Args[1] == "snapshot" {
 		if err := runSnapshot(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "오류:", err)
-			os.Exit(1)
+			return 1
 		}
-		return
+		return 0
 	}
 	port := flag.Int("port", defaultPort, "화면을 열 포트(사용 중이면 빈 포트를 고릅니다)")
 	noBrowser := flag.Bool("no-browser", false, "브라우저를 자동으로 열지 않습니다")
+	showVersion := flag.Bool("version", false, "버전을 출력하고 끝냅니다")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(versionString())
+		return 0
+	}
 
 	if err := run(*port, !*noBrowser); err != nil {
 		fmt.Fprintln(os.Stderr, "오류:", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 func run(port int, openBrowser bool) error {
@@ -82,6 +101,7 @@ func run(port int, openBrowser bool) error {
 	}
 	url := "http://" + ln.Addr().String()
 	fmt.Printf("민원 도우미가 열렸습니다: %s\n", url)
+	fmt.Printf("버전: %s\n", version)
 	fmt.Printf("데이터 폴더: %s\n", dir)
 	fmt.Println("끝내려면 이 창에서 Ctrl+C 를 누르세요.")
 	if openBrowser {

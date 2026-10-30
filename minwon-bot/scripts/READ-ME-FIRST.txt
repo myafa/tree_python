@@ -1,0 +1,36 @@
+민원 도우미 (minwon-bot) — 처음 실행하기
+========================================
+
+민원 작성·답변 평가·재민원 작성을 돕는 개인용 도구입니다. 법률 자문이 아니며,
+제출 전 내용은 직접 확인하세요. 화면은 이 PC 안(127.0.0.1)에서만 열립니다.
+
+[먼저 필요한 것]
+- Claude Code 를 설치하고 로그인해 두세요(구독 방식, 추가 크레딧 없음).
+  또는 설정에서 API 키 방식을 고르고 환경변수 ANTHROPIC_API_KEY 를 설정하세요(호출마다 과금).
+- 사이트 화면 저장(snapshot)을 쓰려면 Chrome 또는 Edge 가 필요합니다.
+
+[Windows]
+1. 압축을 풀고 minwon-bot.exe 를 더블클릭합니다.
+2. "Windows 의 PC 보호" 창이 뜨면 "추가 정보" → "실행"을 누릅니다.
+   (서명되지 않은 개인용 프로그램이라 뜨는 경고입니다. 걱정되면 아래 체크섬을 확인하세요.)
+3. 검은 창이 뜨고 브라우저에 화면이 열립니다. 검은 창을 닫으면 프로그램이 끝납니다.
+
+[macOS]
+1. 내 Mac 종류를 확인합니다. 터미널에서 uname -m 을 입력해
+   arm64 이면 darwin-arm64(Apple Silicon), x86_64 이면 darwin-amd64(Intel) 파일을 받습니다.
+2. 압축을 풀고 터미널에서 그 폴더로 이동해 ./minwon-bot 을 실행합니다.
+3. "확인되지 않은 개발자" 경고가 뜨면 둘 중 하나를 하세요.
+   - 시스템 설정 → 개인정보 보호 및 보안 → 아래쪽 "확인 없이 열기"
+   - 터미널에서: xattr -d com.apple.quarantine ./minwon-bot
+4. 터미널을 닫으면 프로그램이 끝납니다. 터미널에서 실행해야 claude 를 찾습니다.
+
+[Linux]
+압축을 풀고 터미널에서 ./minwon-bot 을 실행합니다.
+
+[확인]
+- ./minwon-bot -version (Windows: minwon-bot.exe -version) 으로 버전을 볼 수 있습니다.
+- 체크섬: 내려받은 페이지의 SHA256SUMS.txt 와 비교하세요.
+  Windows(PowerShell): Get-FileHash .\minwon-bot-windows-amd64.zip
+  macOS/Linux:       shasum -a 256 minwon-bot-*.tar.gz
+
+자세한 사용법은 같이 들어 있는 README.md 를 보세요.

@@ -1,0 +1,151 @@
+# minwon-bot: 테스트 → 빌드 → 실제 Linux/Windows/macOS 에서 실행 시험 → 내려받기 페이지(시험판) 갱신
+name: minwon-bot 빌드와 배포
+
+on:
+  push:
+    paths:
+      - "minwon-bot/**"
+      - ".github/workflows/minwon-bot-build.yml"
+  pull_request:
+    paths:
+      - "minwon-bot/**"
+      - ".github/workflows/minwon-bot-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 같은 브랜치에 새 푸시가 와도 진행 중인 실행을 끊지 않는다(릴리스 교체 도중 끊기지 않게). PR 검사만 끊는다.
+concurrency:
+  group: minwon-bot-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # 로컬에서 시험한 Go 버전을 그대로 쓴다(러너의 go 가 이 버전을 내려받아 쓴다).
+  GOTOOLCHAIN: go1.24.7
+
+defaults:
+  run:
+    working-directory: minwon-bot
+    shell: bash
+
+jobs:
+  test:
+    name: 테스트
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Go 버전
+        run: go version
+      - name: 서식(gofmt)
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then echo "gofmt 가 필요한 파일:"; echo "$out"; exit 1; fi
+      - name: go vet
+        run: go vet ./...
+      - name: 테스트
+        run: go test ./...
+
+  build:
+    name: 빌드
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: 압축 파일 만들기
+        run: VERSION="${GITHUB_SHA::7}" sh scripts/package.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: minwon-bot-dist
+          path: minwon-bot/dist/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0 # 이미 압축된 파일
+
+  smoke:
+    name: 실행 시험 (${{ matrix.os }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: minwon-bot-linux-amd64.tar.gz
+            bin: minwon-bot
+          - os: windows-latest
+            asset: minwon-bot-windows-amd64.zip
+            bin: minwon-bot.exe
+          - os: macos-latest
+            asset: minwon-bot-darwin-arm64.tar.gz
+            bin: minwon-bot
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: minwon-bot-dist
+          path: minwon-bot/dist
+      - name: 압축 풀기
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          mkdir -p run
+          case "$ASSET" in
+            *.zip)
+              if command -v unzip >/dev/null 2>&1; then unzip -q "dist/$ASSET" -d run
+              else python -m zipfile -e "dist/$ASSET" run; fi ;;
+            *) tar -xzf "dist/$ASSET" -C run ;;
+          esac
+          ls -la run
+      - name: 서버 시험
+        env:
+          BIN: run/${{ matrix.bin }}
+        run: bash scripts/smoke.sh "$BIN"
+      - name: 브라우저 시험(참고용)
+        continue-on-error: true
+        env:
+          BIN: run/${{ matrix.bin }}
+        run: bash scripts/smoke-browser.sh "$BIN"
+
+  release:
+    name: 내려받기 페이지 갱신
+    needs: smoke
+    if: github.event_name == 'push' && (github.ref_name == 'ccr-f4335164-udym4o' || github.ref_name == github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: minwon-bot-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: minwon-bot-dist
+          path: minwon-bot/dist
+      - name: 시험판 릴리스 만들기 또는 갱신
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: minwon-bot-latest
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          short="${GITHUB_SHA::7}"
+          built=$(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M KST')
+          python3 - "$short" "$BRANCH" "$built" <<'PY'
+          import sys
+          short, branch, built = sys.argv[1:4]
+          s = open("scripts/RELEASE_NOTES.md", encoding="utf-8").read()
+          s = s.replace("{{VERSION}}", short).replace("{{BRANCH}}", branch).replace("{{DATE}}", built)
+          open("notes.md", "w", encoding="utf-8").write(s)
+          PY
+          title="민원 도우미 시험판 ($short)"
+          # 태그가 이미 있으면 이번 커밋으로 옮긴다(없으면 아래 create 가 만든다).
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" -f sha="$GITHUB_SHA" -F force=true >/dev/null 2>&1 || true
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # 지우고 다시 만들면 잠깐 페이지가 비므로 파일만 덮어쓰고 설명을 고친다.
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --title "$title" --notes-file notes.md --prerelease
+          else
+            gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "$title" --notes-file notes.md --prerelease
+          fi
+          gh release view "$TAG" --json url,assets --jq '.url, (.assets[] | "  " + .name)'

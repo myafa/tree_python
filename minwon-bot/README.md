@@ -30,15 +30,35 @@ AI 호출은 "초안 작성", "답변 평가", "재민원 초안", "문체 학�
 
 ## 설치와 실행
 
-필요한 것: [Claude Code](https://claude.com/claude-code) 설치와 로그인(구독 방식일 때), Go 1.24 이상(직접 빌드할 때).
+### 설치 없이 쓰기 (내려받기)
+
+**[내려받기 페이지 (시험판 minwon-bot-latest)](https://github.com/myafa/tree_python/releases/tag/minwon-bot-latest)** 에서 내 PC 에 맞는 파일을 받습니다. Go 를 설치할 필요가 없습니다.
+
+| PC | 파일 |
+|---|---|
+| Windows | `minwon-bot-windows-amd64.zip` |
+| Mac (Apple Silicon, M1 이후) | `minwon-bot-darwin-arm64.tar.gz` |
+| Mac (Intel) | `minwon-bot-darwin-amd64.tar.gz` |
+| Linux | `minwon-bot-linux-amd64.tar.gz` |
+
+1. 먼저 [Claude Code](https://claude.com/claude-code) 를 설치하고 로그인합니다(구독 방식일 때).
+2. **Windows**: 압축을 풀고 `minwon-bot.exe` 를 더블클릭합니다. "Windows 의 PC 보호"가 뜨면 **추가 정보 → 실행**.
+3. **macOS**: 압축을 풀고 터미널에서 `./minwon-bot`. "확인되지 않은 개발자"가 뜨면 **시스템 설정 → 개인정보 보호 및 보안 → 확인 없이 열기**, 또는 `xattr -d com.apple.quarantine ./minwon-bot`. Mac 종류는 `uname -m` 으로 확인합니다(`arm64` 또는 `x86_64`).
+
+서명되지 않은 개인용 프로그램이라 처음에 경고가 뜹니다. 파일이 내려받기 페이지의 것과 같은지는 `SHA256SUMS.txt` 로 확인할 수 있고, `-version` 으로 어떤 빌드인지 볼 수 있습니다.
+이 파일은 브랜치에 푸시할 때마다 GitHub Actions 가 테스트하고, 실제 Linux·Windows·macOS 환경에서 실행 시험을 통과한 것만 자동으로 올립니다(`.github/workflows/minwon-bot-build.yml`).
+
+### 직접 빌드
+
+필요한 것: Go 1.24 이상.
 
 ```sh
 cd minwon-bot
-go build -o minwon-bot ./cmd/minwon-bot     # 또는 ./scripts/build.sh 로 Windows/macOS/Linux 용을 한 번에
+go build -o minwon-bot ./cmd/minwon-bot     # 또는 ./scripts/package.sh 로 배포용 압축 파일을 한 번에
 ./minwon-bot                                  # 브라우저가 열립니다 (기본 http://127.0.0.1:8745)
 ```
 
-옵션: `-port 9000`(포트 지정), `-no-browser`(브라우저 자동 열기 끄기). 터미널에서 실행하세요.
+옵션: `-port 9000`(포트 지정), `-no-browser`(브라우저 자동 열기 끄기), `-version`(버전 출력). 터미널에서 실행하세요.
 
 - **Windows**: `claude` 는 공식 설치 프로그램으로 설치한 `claude.exe` 를 쓰세요. npm 으로 설치한 `claude.cmd` 는 인자를 안전하게 넘길 수 없어 실패합니다. 이 경우 설정 화면의 "claude 실행 파일 경로"에 `claude.exe` 전체 경로를 입력하세요.
 - **macOS**: 더블클릭 대신 터미널에서 실행해야 `claude` 를 찾습니다. 못 찾으면 설정에서 경로를 직접 입력하세요.
@@ -117,6 +137,8 @@ go build -o minwon-bot ./cmd/minwon-bot     # 또는 ./scripts/build.sh 로 Wind
 go vet ./... && go test ./...                      # 단위·통합 테스트 (AI 는 가짜로 대체, 비용 없음)
 go test -race ./...
 go test -tags live ./internal/minwon -run Live -v  # 실제 AI 호출 점검 (구독/API 사용량이 듭니다)
+VERSION=test sh scripts/package.sh                 # 배포용 압축 파일(dist/)과 SHA256SUMS.txt
+bash scripts/smoke.sh <실행 파일>                   # 실행 시험(서버 기동, 보안 검사) — CI 가 세 OS 에서 돌림
 MINWON_LIVE_BACKEND=api go test -tags live ...     # API 키 방식으로 점검
 ```
 
