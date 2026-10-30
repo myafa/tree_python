@@ -119,6 +119,7 @@
     },
     copy: function (btn) {
       var el = document.getElementById(btn.dataset.target);
+      if (!el.value) { toast('복사할 내용이 없습니다.', true); return; }
       return navigator.clipboard.writeText(el.value).then(function () { toast('복사했습니다.'); },
         function () { el.select(); toast('자동 복사가 막혀 있습니다. 선택된 글을 직접 복사하세요 (Ctrl+C).', true); });
     },
@@ -233,6 +234,44 @@
         return post('/api/style/extract').then(function () { location.reload(); });
       });
     },
+    'snap-mask': function (btn) {
+      var name = val('snap-name').trim();
+      if (!name) { toast('가릴 이름을 적으세요.', true); return; }
+      return busy(btn, '…', function () {
+        return post('/api/snapshot/mask', { name: name }).then(function (j) {
+          toast(j.added ? '가릴 이름에 추가했습니다. 다음 저장부터 가려집니다.' : '이미 가리고 있는 이름입니다.');
+          setTimeout(function () { location.reload(); }, 900);
+        });
+      });
+    },
+    'snap-start': function (btn) {
+      return busy(btn, '여는 중…', function () {
+        return post('/api/snapshot/start', { url: val('snap-url').trim() }).then(function (j) {
+          renderSnap(j.status);
+          toast(j.reused ? '저장용 브라우저가 이미 열려 있습니다. 앞으로 나오지 않으면 작업 표시줄에서 찾으세요.' : '저장용 브라우저를 열었습니다. 그 창에서 로그인하세요.');
+        }, snapFailed);
+      });
+    },
+    'snap-capture': function (btn) {
+      return busy(btn, '저장 중…', function () {
+        return post('/api/snapshot/capture').then(function (j) {
+          renderSnap(j);
+          var warned = j.shots.slice(-j.saved).some(function (s) { return s.warnings && s.warnings.length; });
+          toast(j.saved + '개 탭을 저장했습니다.' + (warned ? ' 경고가 있으니 목록을 확인하세요.' : ''), warned);
+        }, snapFailed);
+      });
+    },
+    'snap-stop': function (btn) {
+      return busy(btn, '닫는 중…', function () {
+        return post('/api/snapshot/stop').then(function (j) { renderSnap(j); toast('저장용 브라우저를 닫았습니다.'); });
+      });
+    },
+    'snap-reset': function (btn) {
+      if (!confirm('모은 화면 목록을 비우고 새로 시작합니다. 이미 저장한 파일은 지우지 않습니다. 계속할까요?')) return;
+      return busy(btn, '…', function () {
+        return post('/api/snapshot/reset').then(function (j) { renderSnap(j); toast('목록을 비웠습니다. 다음 저장부터 새 폴더에 모읍니다.'); });
+      });
+    },
     'style-reset': function (btn) {
       if (!confirm('학습된 문체 프로필을 지웁니다. 붙여넣은 글은 남습니다.')) return;
       return busy(btn, '…', function () {
@@ -240,6 +279,39 @@
       });
     }
   };
+
+  // 화면 저장 페이지: 서버가 알려 준 상태로 목록과 모은 글을 다시 그린다.
+  function renderSnap(st) {
+    var state = document.getElementById('snap-state');
+    if (!state || !st) return;
+    state.textContent = st.open ? '저장용 브라우저가 열려 있습니다.' : '저장용 브라우저가 닫혀 있습니다.';
+    document.getElementById('snap-count').textContent = '저장한 화면 ' + st.shots.length + '개';
+    document.getElementById('snap-text').value = st.text;
+    document.getElementById('snap-dir').textContent = st.dir || '(첫 저장 때 정해집니다)';
+    var list = document.getElementById('snap-list');
+    list.textContent = '';
+    st.shots.forEach(function (s) {
+      var li = document.createElement('li');
+      li.appendChild(document.createTextNode(s.name + ' '));
+      var meta = document.createElement('span');
+      meta.className = 'muted';
+      meta.textContent = s.url + ' · 프레임 ' + s.frames + '개';
+      li.appendChild(meta);
+      (s.warnings || []).forEach(function (w) {
+        var d = document.createElement('div');
+        d.className = 'attn';
+        d.textContent = w;
+        li.appendChild(d);
+      });
+      list.appendChild(li);
+    });
+  }
+
+  // 실패하면(사용자가 브라우저 창을 직접 닫은 경우 등) 바뀐 상태를 다시 읽어 그린 뒤 오류를 알린다.
+  function snapFailed(e) {
+    return fetch('/api/snapshot/status').then(function (r) { return r.json(); }).then(renderSnap, function () {})
+      .then(function () { throw e; });
+  }
 
   document.addEventListener('click', function (ev) {
     var btn = ev.target.closest('[data-action]');

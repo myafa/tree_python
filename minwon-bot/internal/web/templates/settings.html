@@ -40,7 +40,8 @@
 <div class="card">
   <h3>답변 후 자동 처리</h3>
   <p class="muted small">답변이 기록되면 사람의 승인 없이 평가하고, 결과에 따라 <strong>재민원을 쓰거나 사안을 종결</strong>한 뒤 보고함(과 연결한 채널)으로 알려 드립니다.
-  사이트 연동: {{if .PortalName}}<strong>{{.PortalName}}</strong> — 재민원도 사이트에 자동 제출합니다.{{else}}<strong>없음</strong> — 재민원은 초안까지만 자동으로 만들고, 직접 제출하셔야 합니다(보고함으로 알려 드립니다).{{end}}</p>
+  사이트 연동: {{if .PortalName}}<strong>{{.PortalName}}</strong> — 재민원도 사이트에 자동 제출합니다.{{else}}<strong>없음</strong> — 재민원은 초안까지만 자동으로 만들고, 직접 제출하셔야 합니다(보고함으로 알려 드립니다).
+  연동을 준비하려면 <a href="/snapshot">국민신문고 화면 저장</a>에서 화면 구조를 모아 보내 주세요.{{end}}</p>
   <label class="check"><input type="checkbox" id="s-auto-enabled" {{if .Cfg.Auto.Enabled}}checked{{end}}> 자동 처리 사용</label>
   <label class="check"><input type="checkbox" id="s-auto-answer" {{if .Cfg.Auto.AnswerAuto}}checked{{end}}> 답변이 기록되면 승인 없이 평가하고 재민원 또는 종결까지 처리</label>
   <div class="grid2">

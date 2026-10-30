@@ -46,6 +46,12 @@ var skipURL = regexp.MustCompile(`^(about:|chrome:|chrome-extension:|devtools:|e
 
 const frameDepth = 3
 
+// frameListTimeout 은 프레임 목록을 찾는 데 쓰는 시간이다. testHookBeforeFrame 은 테스트에서 프레임 사이에 시간을 끈다.
+var (
+	frameListTimeout    = 5 * time.Second
+	testHookBeforeFrame = func() {}
+)
+
 // Snapshot 은 열려 있는 모든 탭의 화면 구조를 저장한다.
 func (s *Session) Snapshot(ctx context.Context, o SnapshotOptions) ([]PageShot, error) {
 	if o.Masker == nil {
@@ -140,7 +146,7 @@ func snapshotPage(ctx context.Context, p *rod.Page, o SnapshotOptions, seq int, 
 		if depth >= frameDepth {
 			return
 		}
-		els, err := fp.Timeout(5 * time.Second).Elements("iframe, frame")
+		els, err := fp.Timeout(frameListTimeout).Elements("iframe, frame")
 		if err != nil {
 			return
 		}
@@ -148,6 +154,9 @@ func snapshotPage(ctx context.Context, p *rod.Page, o SnapshotOptions, seq int, 
 			if ctx.Err() != nil {
 				return
 			}
+			testHookBeforeFrame()
+			// 목록을 찾을 때 건 시간 제한이 이 프레임 저장까지 이어지지 않게, 프레임마다 새로 건다.
+			el := el.Context(ctx).Timeout(15 * time.Second)
 			n++
 			child := fmt.Sprintf("frame-%d", n)
 			srcAttr, _ := el.Attribute("src")
@@ -161,7 +170,8 @@ func snapshotPage(ctx context.Context, p *rod.Page, o SnapshotOptions, seq int, 
 				fmt.Fprintf(&outline, "== %s (%s) — 접근하지 못함\n", child, sanitizeURL(src))
 				continue
 			}
-			capture(sub, child, src, depth+1)
+			// Frame 은 목록을 찾은 페이지(짧은 시간 제한)를 복제하므로 저장 전체의 문맥으로 바꾼다.
+			capture(sub.Context(ctx), child, src, depth+1)
 		}
 	}
 	capture(p, "main", rawURL, 0)

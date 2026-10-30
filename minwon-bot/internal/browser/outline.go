@@ -27,6 +27,9 @@ const outlineJS = `() => {
   const kv = (el, names) => names.map(n => { const v = el.getAttribute(n); return v ? n + '=' + JSON.stringify(txt(v, 60)) : ''; }).filter(Boolean).join(' ');
   const flags = (el) => ['required', 'readonly', 'disabled', 'checked', 'multiple'].filter(f => el.hasAttribute(f)).join(',');
   const lab = (el) => { const l = labelOf(el); return l ? ' label=' + JSON.stringify(l) : ''; };
+  // 표 안의 링크·클릭 행 글자는 본인 민원 제목 같은 목록 내용이라 빼고, 동작(href, onclick)만 남긴다.
+  const inList = (el) => !!el.closest('td') || el.tagName === 'TR' || el.tagName === 'TD' || el.tagName === 'TBODY';
+  const listText = (el, n) => inList(el) ? '(목록 글자 생략)' : txt(el.innerText, n);
   const forms = Array.from(document.forms);
   out.push('title=' + JSON.stringify(txt(document.title, 80)) + ' url=' + path(location.href));
   document.querySelectorAll('h1, h2, h3').forEach((h, i) => { if (i < 20) out.push('[h] ' + txt(h.innerText, 60)); });
@@ -53,7 +56,7 @@ const outlineJS = `() => {
     } else if (tag === 'button' || el.getAttribute('role') === 'button') {
       line = '[button] ' + base + ' ' + kv(el, ['type', 'onclick']) + ' text=' + JSON.stringify(txt(el.innerText, 40)) + f;
     } else if (tag === 'a') {
-      line = '[a] ' + kv(el, ['id', 'onclick', 'target']) + ' text=' + JSON.stringify(txt(el.innerText, 40)) + ' href=' + path(el.getAttribute('href'));
+      line = '[a] ' + kv(el, ['id', 'onclick', 'target']) + ' text=' + JSON.stringify(listText(el, 40)) + ' href=' + path(el.getAttribute('href'));
     } else if (tag === 'iframe' || tag === 'frame') {
       line = '[' + tag + '] ' + base + ' src=' + path(el.getAttribute('src'));
     } else if (tag === 'table') {
@@ -61,7 +64,7 @@ const outlineJS = `() => {
       if (!th.length) continue;
       line = '[table] ' + base + ' headers=' + JSON.stringify(th) + ' rows=' + el.rows.length;
     } else {
-      line = '[' + tag + ' onclick] ' + kv(el, ['id', 'class', 'onclick']) + ' text=' + JSON.stringify(txt(el.innerText, 40));
+      line = '[' + tag + ' onclick] ' + kv(el, ['id', 'class', 'onclick']) + ' text=' + JSON.stringify(listText(el, 40));
     }
     out.push(line.replace(/\s+/g, ' ').trim() + hid);
   }

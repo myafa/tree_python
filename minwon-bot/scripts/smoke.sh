@@ -49,11 +49,11 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: applicat
 [ "$code" = 403 ] || fail "토큰 없는 요청을 막지 못했습니다($code)"
 echo "확인: 토큰 없는 요청 차단(403)"
 
-for p in /static/app.js /static/app.css /settings /inbox /cases/new; do
+for p in /static/app.js /static/app.css /settings /inbox /cases/new /snapshot; do
   code=$(curl -s -o /dev/null -w '%{http_code}' "$URL$p")
   [ "$code" = 200 ] || fail "$p 응답 $code"
 done
-echo "확인: 정적 파일과 화면(설정, 보고함, 새 사안)"
+echo "확인: 정적 파일과 화면(설정, 보고함, 새 사안, 화면 저장)"
 
 [ -f "$MINWON_HOME/minwon.db" ] || fail "데이터 파일이 만들어지지 않았습니다"
 echo "확인: 데이터 파일 생성"

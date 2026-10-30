@@ -11,6 +11,8 @@
   <button type="button" id="go" onclick="go()">신청</button>
 </form>
 <a href="/my.do;jsessionid=SECRET-SESSION?page=2">나의 민원</a>
+<table id="mylist"><tr><th>제목</th><th>상태</th></tr>
+<tr><td><a href="/view.do?no=1" onclick="fn_view('2AA-1')">LISTTEXT 내 민원 제목</a></td><td>답변완료</td></tr></table>
 <iframe id="agencyFrame" src="frame.html"></iframe>
 <script>var token = "SECRET-JS"; function go() {}</script>
 </body></html>

@@ -1,0 +1,65 @@
+{{define "content"}}
+<h1>국민신문고 화면 저장</h1>
+<p class="muted">재민원 자동 제출과 답변 자동 확인(사이트 연동)을 만들려면 국민신문고 화면의 구조가 필요합니다.
+아래 순서대로 버튼만 누르면 됩니다. 저장하는 것은 입력칸·버튼·링크의 구조이고, 입력한 값·쿠키·비밀번호는 저장하지 않습니다.</p>
+{{if .NoBrowser}}<div class="note bad">{{.NoBrowser}}</div>{{end}}
+
+<div class="card">
+  <h3>1. 가릴 이름 넣기</h3>
+  <p class="muted small">로그인하면 화면 위쪽에 이름이 나옵니다. 주민번호·전화번호·이메일은 형식을 보고 자동으로 가리지만, 이름은 여기에 적어야 가려집니다.</p>
+  {{if .Terms}}<p class="small">지금 가리는 낱말 {{len .Terms}}개: {{range $i, $t := .Terms}}{{if $i}}, {{end}}<code>{{$t}}</code>{{end}}
+    <a href="/settings">설정에서 고치기</a></p>
+  {{else}}<div class="note">아직 가릴 이름이 없습니다. 저장하기 전에 본인 이름을 넣으세요.</div>{{end}}
+  <div class="row">
+    <input type="text" id="snap-name" class="w-240" placeholder="예: 홍길동" autocomplete="off" aria-label="가릴 이름">
+    <button data-action="snap-mask">가릴 이름 추가</button>
+  </div>
+</div>
+
+<div class="card">
+  <h3>2. 저장용 브라우저 열기</h3>
+  <p class="muted small">Chrome 또는 Edge 가 새 창으로 열립니다. 평소 쓰는 브라우저와 따로 쓰는 전용 창이라 즐겨찾기나 다른 사이트 로그인과 섞이지 않습니다.
+  로그인(간편인증, 공동인증서 등)은 그 창에서 직접 하세요. 이 도구는 로그인을 대신하지 않습니다.</p>
+  <label for="snap-url">처음 열 주소</label>
+  <input type="text" id="snap-url" class="w-420" value="{{.DefaultURL}}">
+  <div class="row">
+    <button class="primary" data-action="snap-start">브라우저 열기</button>
+    <span class="small" id="snap-state">{{if .Open}}저장용 브라우저가 열려 있습니다.{{else}}저장용 브라우저가 닫혀 있습니다.{{end}}</span>
+  </div>
+</div>
+
+<div class="card">
+  <h3>3. 화면마다 [지금 화면 저장]</h3>
+  <p class="muted small">아래 화면을 차례로 열고, 화면이 다 뜬 뒤 버튼을 누르세요. 열려 있는 탭을 모두 한 번에 저장합니다.
+  글을 쓰거나 신청 버튼을 누를 필요는 없습니다.</p>
+  <ol class="small">
+    <li>로그인 전 첫 화면 (브라우저가 열리면 바로 저장)</li>
+    <li>로그인 화면</li>
+    <li>로그인 직후 화면</li>
+    <li>민원 신청(작성) 화면 — 처리기관 검색·선택 창이 따로 뜨면 그 창도 열어 둔 채로</li>
+    <li>'나의 민원' 목록 화면</li>
+    <li>답변이 달린 민원의 상세(답변) 화면</li>
+  </ol>
+  <div class="row">
+    <button class="primary" data-action="snap-capture">지금 화면 저장</button>
+    <span class="small" id="snap-count">저장한 화면 {{len .Shots}}개</span>
+  </div>
+  <ul class="small" id="snap-list">
+    {{range .Shots}}<li>{{.Name}} <span class="muted">{{.URL}} · 프레임 {{.Frames}}개</span>{{range .Warnings}}<div class="attn">{{.}}</div>{{end}}</li>{{end}}
+  </ul>
+</div>
+
+<div class="card">
+  <h3>4. 모두 복사해서 대화창에 붙여넣기</h3>
+  <p class="muted small">붙여넣기 전에 이름·주소 같은 개인정보가 남아 있지 않은지 한 번 훑어보세요.
+  남아 있으면 1번에서 그 낱말을 추가하고 [새로 시작]을 누른 뒤 다시 저장하세요.</p>
+  <textarea id="snap-text" rows="12" readonly aria-label="모은 화면 구조">{{.Text}}</textarea>
+  <p class="muted small">저장 폴더: <code id="snap-dir">{{if .Dir}}{{.Dir}}{{else}}(첫 저장 때 정해집니다){{end}}</code></p>
+  <div class="row">
+    <button class="primary" data-action="copy" data-target="snap-text">모두 복사</button>
+    <button data-action="snap-stop">브라우저 닫기</button>
+    <button class="danger" data-action="snap-reset">새로 시작</button>
+  </div>
+  <p class="muted small">브라우저를 닫아도 로그인 상태는 이 PC 의 전용 프로필{{if .ProfileHint}}(<code>{{.ProfileHint}}</code>){{end}}에 남아, 다음에는 다시 로그인하지 않아도 될 수 있습니다.</p>
+</div>
+{{end}}

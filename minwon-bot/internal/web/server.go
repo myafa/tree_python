@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"minwon-bot/internal/auto"
+	"minwon-bot/internal/browser"
 	"minwon-bot/internal/config"
 	"minwon-bot/internal/llm"
 	"minwon-bot/internal/minwon"
@@ -44,6 +45,12 @@ type Deps struct {
 	Portal portal.Portal
 	// Lock 은 AI 를 부르며 상태를 바꾸는 작업을 한 번에 하나만 하게 한다. 비우면 내부에서 만든다.
 	Lock sync.Locker
+	// DataDir 는 데이터 폴더다. 화면 저장용 브라우저 프로필과 저장한 화면이 여기에 생긴다.
+	DataDir string
+	// Browser 는 화면 저장용 브라우저 설정(실행 파일, 창 없이 실행 등)이다. 비우면 설치된 Chrome/Edge 를 창으로 연다.
+	Browser func() browser.Options
+	// Version 은 화면 저장 요약 머리글에 적는 버전이다.
+	Version string
 }
 
 // DefaultLLM 은 설정에 맞는 백엔드를 만든다.
@@ -65,6 +72,7 @@ type Server struct {
 	llm llm.LLM
 
 	runner *auto.Runner
+	snap   snapState
 }
 
 // Runner 는 답변 자동 처리 실행기다. main 이 Start 를 불러 주기 점검을 돌린다.
@@ -90,7 +98,7 @@ func New(d Deps) (*Server, error) {
 		Reporter: func() report.Reporter { return report.Build(s.config(), d.Store) },
 		Style:    s.loadStyle, Now: d.Now, Lock: d.Lock,
 	})
-	for _, name := range []string{"cases", "case_new", "case", "settings", "inbox"} {
+	for _, name := range []string{"cases", "case_new", "case", "settings", "inbox", "snapshot"} {
 		t, err := template.New("").Funcs(funcs).ParseFS(assets, "templates/layout.html", "templates/"+name+".html")
 		if err != nil {
 			return nil, fmt.Errorf("템플릿 %s: %w", name, err)
@@ -108,6 +116,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /cases/{id}", s.pageCase)
 	mux.HandleFunc("GET /settings", s.pageSettings)
 	mux.HandleFunc("GET /inbox", s.pageInbox)
+	mux.HandleFunc("GET /snapshot", s.pageSnapshot)
 	mux.Handle("GET /static/", http.FileServerFS(assets))
 
 	mux.HandleFunc("POST /api/cases/{id}/draft", s.apiDraft)
@@ -130,6 +139,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/style/samples/{id}/delete", s.apiStyleDelete)
 	mux.HandleFunc("POST /api/style/extract", s.apiStyleExtract)
 	mux.HandleFunc("POST /api/style/reset", s.apiStyleReset)
+	mux.HandleFunc("GET /api/snapshot/status", s.apiSnapStatus)
+	mux.HandleFunc("POST /api/snapshot/start", s.apiSnapStart)
+	mux.HandleFunc("POST /api/snapshot/capture", s.apiSnapCapture)
+	mux.HandleFunc("POST /api/snapshot/stop", s.apiSnapStop)
+	mux.HandleFunc("POST /api/snapshot/reset", s.apiSnapReset)
+	mux.HandleFunc("POST /api/snapshot/mask", s.apiSnapMask)
 	return s.secure(mux)
 }
 

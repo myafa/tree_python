@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"minwon-bot/internal/browser"
 	"minwon-bot/internal/config"
 	"minwon-bot/internal/store"
 	"minwon-bot/internal/web"
@@ -90,10 +91,15 @@ func run(port int, openBrowser bool) error {
 		Store:      st,
 		Config:     cfg,
 		SaveConfig: func(c config.Config) error { return config.Save(dir, c) },
+		DataDir:    dir,
+		Browser:    snapshotBrowser,
+		Version:    version,
 	})
 	if err != nil {
 		return err
 	}
+	// 화면 저장용 브라우저가 열려 있으면 끝낼 때 닫는다(로그인 상태는 프로필에 남는다).
+	defer srv.Close()
 
 	ln, err := listen(port)
 	if err != nil {
@@ -128,6 +134,8 @@ func run(port int, openBrowser bool) error {
 		}
 	case <-stop:
 		cancel()
+		// Windows 에서 창을 닫으면 몇 초 뒤 강제로 끝나므로 저장용 브라우저부터 닫는다.
+		srv.Close()
 		shutdownCtx, done := context.WithTimeout(context.Background(), 5*time.Second)
 		defer done()
 		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
@@ -135,6 +143,15 @@ func run(port int, openBrowser bool) error {
 		}
 	}
 	return nil
+}
+
+// snapshotBrowser 는 화면 저장용 브라우저 설정이다. 환경변수는 자동 시험(CI)용이다.
+func snapshotBrowser() browser.Options {
+	return browser.Options{
+		Bin:       os.Getenv("MINWON_SNAPSHOT_BROWSER"),
+		Headless:  os.Getenv("MINWON_SNAPSHOT_HEADLESS") == "1",
+		NoSandbox: os.Getenv("MINWON_SNAPSHOT_NO_SANDBOX") == "1",
+	}
 }
 
 // listen 은 127.0.0.1 에서만 받는다. 정한 포트가 사용 중이면 빈 포트를 쓴다.
